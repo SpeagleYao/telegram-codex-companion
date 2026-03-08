@@ -1,0 +1,16 @@
+{
+  "name": "telegram-codex-companion",
+  "version": "0.1.0",
+  "description": "Run Codex CLI through a Telegram bot on your local machine.",
+  "type": "module",
+  "private": false,
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test --test-concurrency=1 --test-isolation=none"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
+
+

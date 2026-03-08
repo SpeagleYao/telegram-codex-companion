@@ -1,0 +1,332 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { TelegramCompanionService } from "../src/bot/telegramCompanionService.js";
+import { CompanionStateStore } from "../src/state/store.js";
+
+class FakeTelegramApi {
+  constructor() {
+    this.messages = [];
+    this.edits = [];
+  }
+
+  async sendMessage(chatId, text, options = {}) {
+    const message = { chatId, text, options, message_id: this.messages.length + 1 };
+    this.messages.push(message);
+    return { ok: true, message_id: message.message_id };
+  }
+
+  async editMessageText(chatId, messageId, text, options = {}) {
+    this.edits.push({ chatId, messageId, text, options });
+    return { ok: true };
+  }
+}
+
+class FakeRunner {
+  constructor() {
+    this.calls = [];
+    this.results = [];
+  }
+
+  enqueue(result) {
+    this.results.push(result);
+  }
+
+  startRun(args) {
+    this.calls.push(args);
+    const next = this.results.shift() ?? { threadId: "thread-default", output: "ok", pid: 9000, events: [] };
+    queueMicrotask(() => {
+      if (next.threadId && args.onThreadId) {
+        args.onThreadId(next.threadId);
+      }
+      for (const event of next.events ?? []) {
+        args.onEvent?.(event);
+      }
+    });
+
+    return {
+      pid: next.pid ?? 9000,
+      stop() {
+        if (next.onStop) {
+          next.onStop();
+        }
+      },
+      promise: Promise.resolve().then(() => {
+        if (next.error) {
+          throw next.error;
+        }
+        return {
+          threadId: next.threadId ?? null,
+          output: next.output ?? ""
+        };
+      })
+    };
+  }
+}
+
+function createConfig(overrides = {}) {
+  return {
+    allowedUserIds: new Set([111]),
+    defaultReplyChunkSize: 400,
+    ...overrides
+  };
+}
+
+function createUpdate(userId, chatId, text, type = "private") {
+  return {
+    update_id: Date.now(),
+    message: {
+      message_id: 1,
+      text,
+      from: { id: userId },
+      chat: { id: chatId, type }
+    }
+  };
+}
+
+async function flush() {
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+function createStore(t) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "telegram-codex-companion-"));
+  const store = new CompanionStateStore({
+    projectsDbPath: path.join(root, "projects.sqlite"),
+    stateDbPath: path.join(root, "state.sqlite")
+  });
+  t.after(() => {
+    store.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  return { store, root };
+}
+
+test("rejects unauthorized users", async (t) => {
+  const { store } = createStore(t);
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(222, 500, "/start"));
+
+  assert.equal(telegramApi.messages.at(-1).text, "Unauthorized Telegram user.");
+});
+
+test("adds a project and sets it as current for the first user", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  await service.handleUpdate(createUpdate(111, 500, "/project current"));
+
+  const currentProject = store.getProject("demo");
+  const binding = store.getUserBinding(111);
+  assert.equal(currentProject.name, "demo");
+  assert.equal(binding.currentProjectName, "demo");
+  assert.match(telegramApi.messages.at(-1).text, /Current project: demo/);
+});
+
+test("creates a new session, streams progress, and resumes it on the next prompt", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  runner.enqueue({
+    threadId: "thread-1",
+    output: "First answer",
+    pid: 1111,
+    events: [
+      { type: "thread.started", thread_id: "thread-1" },
+      { type: "item.started", item: { type: "exec_command" } },
+      { type: "item.completed", item: { type: "agent_message" } }
+    ]
+  });
+  runner.enqueue({ threadId: "thread-1", output: "Second answer", pid: 2222 });
+
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  await service.handleUpdate(createUpdate(111, 500, "/new"));
+  await service.handleUpdate(createUpdate(111, 500, "fix the bug in this repo"));
+  await flush();
+
+  const firstSession = store.listSessionsForProject("demo")[0];
+  assert.equal(runner.calls[0].resumeSessionId, null);
+  assert.equal(firstSession.codexSessionId, "thread-1");
+  assert.equal(store.getUserBinding(111).activeSessionId, firstSession.id);
+  assert.ok(telegramApi.edits.length > 0);
+
+  await service.handleUpdate(createUpdate(111, 500, "now add tests"));
+  await flush();
+
+  assert.equal(runner.calls[1].resumeSessionId, "thread-1");
+  assert.equal(store.getUserBinding(111).activeSessionId, firstSession.id);
+  assert.equal(store.getSessionById(firstSession.id).status, "idle");
+  assert.ok(telegramApi.messages.some((entry) => entry.text.includes("First answer")));
+  assert.ok(telegramApi.messages.some((entry) => entry.text.includes("Second answer")));
+});
+
+test("renames the active session", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  runner.enqueue({ threadId: "thread-rename", output: "Answer", pid: 1111 });
+
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  await service.handleUpdate(createUpdate(111, 500, "start a session"));
+  await flush();
+  await service.handleUpdate(createUpdate(111, 500, "/rename bugfix investigation"));
+
+  const session = store.listSessionsForProject("demo")[0];
+  assert.equal(session.title, "bugfix investigation");
+});
+
+test("recovery clears dead detached runs and marks sessions interrupted", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  store.addProject({ name: "demo", cwd: projectPath });
+  store.ensureUserBinding(111);
+  const session = store.createSession({
+    codexSessionId: "thread-dead",
+    projectName: "demo",
+    title: "old run",
+    status: "running"
+  });
+  store.setActiveSession(111, session.id);
+  store.setRunState(111, { runningSessionId: session.id, runningPid: 4242 });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi,
+    processUtils: {
+      isPidAlive() {
+        return false;
+      },
+      killPid() {}
+    }
+  });
+
+  await service.recoverRunningState();
+
+  const binding = store.getUserBinding(111);
+  assert.equal(binding.runningPid, null);
+  assert.equal(store.getSessionById(session.id).status, "interrupted");
+});
+
+test("refuses prompts when the current project path no longer exists", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "missing-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  fs.rmSync(projectPath, { recursive: true, force: true });
+  await service.handleUpdate(createUpdate(111, 500, "please continue"));
+
+  assert.match(telegramApi.messages.at(-1).text, /Project path no longer exists/);
+  assert.equal(runner.calls.length, 0);
+});
+
+test("splits long replies into multiple Telegram messages", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  runner.enqueue({
+    threadId: "thread-99",
+    output: "one two three four five six seven eight nine ten eleven twelve thirteen fourteen"
+  });
+
+  const service = new TelegramCompanionService({
+    config: createConfig({ defaultReplyChunkSize: 40 }),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  await service.handleUpdate(createUpdate(111, 500, "long answer please"));
+  await flush();
+
+  const answerChunks = telegramApi.messages.filter((entry) => entry.text.includes("one two") || entry.text.includes("eleven") || entry.text.includes("fourteen"));
+  assert.ok(answerChunks.length >= 2);
+});
+
+test("start and projects attach a mobile-friendly reply keyboard", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, "/start"));
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  await service.handleUpdate(createUpdate(111, 500, "/projects"));
+
+  const projectsReply = telegramApi.messages.at(-1);
+  const keyboard = projectsReply.options.reply_markup.keyboard.flat().map((button) => button.text);
+
+  assert.ok(keyboard.includes("/project use demo"));
+  assert.ok(keyboard.includes("/new"));
+  assert.ok(keyboard.includes("/status"));
+});
+

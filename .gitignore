@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+node_modules/
+*.log
+coverage/
+.DS_Store
+Thumbs.db
