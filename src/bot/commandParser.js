@@ -18,13 +18,22 @@ export function parseIncomingText(text) {
   const rest = firstSpace === -1 ? "" : trimmed.slice(firstSpace + 1).trim();
 
   if (command === "/project") {
-    const addMatch = /^add\s+([^\s]+)\s+(.+)$/u.exec(rest);
+    const addMatch = /^add\s+([^\s]+)(?:\s+(.+))?$/u.exec(rest);
     if (addMatch) {
       return {
         type: "command",
         command: "project_add",
         name: addMatch[1],
-        path: addMatch[2]
+        path: addMatch[2] ?? null
+      };
+    }
+
+    const defaultMatch = /^default(?:\s+(.+))?$/u.exec(rest);
+    if (defaultMatch) {
+      return {
+        type: "command",
+        command: defaultMatch[1] ? "project_default_set" : "project_default_show",
+        path: defaultMatch[1] ?? null
       };
     }
 

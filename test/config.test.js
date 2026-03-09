@@ -37,6 +37,7 @@ test("loadConfig reads .env values and resolves default paths", (t) => {
       "CODEX_SANDBOX=workspace-write",
       "CODEX_MODEL=gpt-5.4",
       "CODEX_REASONING_EFFORT=high",
+      "DEFAULT_PROJECT_ROOT=./workspace-root",
       "DEBUG_LOG_ENABLED=true",
       "DEFAULT_REPLY_CHUNK_SIZE=1234",
       "POLL_TIMEOUT_SECONDS=9",
@@ -53,6 +54,7 @@ test("loadConfig reads .env values and resolves default paths", (t) => {
   assert.equal(config.codexSandbox, "workspace-write");
   assert.equal(config.codexModel, "gpt-5.4");
   assert.equal(config.codexReasoningEffort, "high");
+  assert.equal(config.defaultProjectRoot, path.join(root, "workspace-root"));
   assert.equal(config.debugLogEnabled, true);
   assert.equal(config.defaultReplyChunkSize, 1234);
   assert.equal(config.pollTimeoutSeconds, 9);
@@ -66,19 +68,21 @@ test("loadConfig lets process.env override .env values", (t) => {
   const root = withTempCwd(t);
   fs.writeFileSync(
     path.join(root, ".env"),
-    "TELEGRAM_BOT_TOKEN=file-token\nALLOWED_USER_IDS=111\nDEBUG_LOG_ENABLED=false\n",
+    "TELEGRAM_BOT_TOKEN=file-token\nALLOWED_USER_IDS=111\nDEBUG_LOG_ENABLED=false\nDEFAULT_PROJECT_ROOT=./from-file\n",
     "utf8"
   );
 
   process.env.TELEGRAM_BOT_TOKEN = "env-token";
   process.env.ALLOWED_USER_IDS = "333,444";
   process.env.DEBUG_LOG_ENABLED = "true";
+  process.env.DEFAULT_PROJECT_ROOT = "./from-env";
 
   const config = loadConfig();
 
   assert.equal(config.telegramBotToken, "env-token");
   assert.deepEqual([...config.allowedUserIds], [333, 444]);
   assert.equal(config.debugLogEnabled, true);
+  assert.equal(config.defaultProjectRoot, path.join(root, "from-env"));
 });
 
 

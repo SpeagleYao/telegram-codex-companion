@@ -6,7 +6,7 @@ Use Codex CLI from your phone through a private Telegram bot.
 
 ## Can A Beginner Use This Quickly?
 
-Yes, but only if the first-run path is explicit.
+Yes. You can still start with an explicit path, but a default project root can now handle first-run project creation too.
 
 For a new user, the real blockers are usually not inside this repo. They are:
 
@@ -155,7 +155,8 @@ Open a private chat with your bot and send:
 Then add one local project:
 
 ```text
-/project add demo E:\work\demo
+/project default E:\codex project
+/project add demo
 /project use demo
 /new
 ```
@@ -233,6 +234,7 @@ The bot reads configuration from `.env` in the project root.
 | `CODEX_SANDBOX` | No | Passed as `--sandbox <value>`. Default: `workspace-write`. |
 | `CODEX_MODEL` | No | Optional Codex model override. If left empty, Codex CLI uses its own default model. |
 | `CODEX_REASONING_EFFORT` | No | Optional explicit reasoning override passed to Codex as `model_reasoning_effort`. Example: `low`, `medium`, `high`. If left empty, Codex CLI uses its own default reasoning setting. |
+| `DEFAULT_PROJECT_ROOT` | No | Default root folder used when `/project add <name>` omits the path or `/project use <name>` needs to auto-create a project. |
 | `DEFAULT_REPLY_CHUNK_SIZE` | No | Max characters per Telegram message chunk. Default: `3500`. |
 | `POLL_TIMEOUT_SECONDS` | No | Telegram long-poll timeout. Default: `20`. |
 | `POLL_RETRY_DELAY_MS` | No | Delay after polling errors. Default: `3000`. |
@@ -257,6 +259,7 @@ CODEX_FULL_AUTO=true
 CODEX_SANDBOX=workspace-write
 CODEX_MODEL=
 CODEX_REASONING_EFFORT=high
+DEFAULT_PROJECT_ROOT=E:\codex project
 DEFAULT_REPLY_CHUNK_SIZE=3500
 POLL_TIMEOUT_SECONDS=20
 POLL_RETRY_DELAY_MS=3000
@@ -277,9 +280,11 @@ CODEX_EXECUTABLE=C:\Users\<YourUser>\AppData\Roaming\npm\codex.cmd
 - `/start` - show help
 - `/help` - show the full command reference and quick-start workflow
 - `/projects` - list saved projects and mark the current one
-- `/project add <name> <path>` - add a local project directory
-- `/project use <name>` - switch the current project
-- `/project current` - show the current project and path
+- `/project add <name> [path]` - add a local project directory; if `path` is omitted, the bot uses `DEFAULT_PROJECT_ROOT` or your Telegram override
+- `/project use <name>` - switch the current project, auto-creating it inside the default root when needed
+- `/project current` - show the current project, path, and effective default root
+- `/project default` - show the effective default project root
+- `/project default <path>` - set the default project root from Telegram
 - `/new` - arm a brand-new session; the next normal message starts it
 - `/sessions` - list recent sessions for the current project
 - `/use <n>` - switch to a session shown by `/sessions`
@@ -292,7 +297,7 @@ CODEX_EXECUTABLE=C:\Users\<YourUser>\AppData\Roaming\npm\codex.cmd
 Notes:
 
 - project names may only contain letters, numbers, dot, dash, and underscore
-- the project path must already exist on disk
+- if `/project add <name>` omits the path, the bot uses the effective default project root and creates the folder when needed
 - `/project add` accepts paths with spaces as long as the project name itself has no spaces
 
 ## Typical First-Time Workflow
@@ -300,7 +305,8 @@ Notes:
 ### Add a project
 
 ```text
-/project add blog E:\work\blog
+/project default E:\codex project
+/project add blog
 ```
 
 ### Switch to the project
@@ -349,6 +355,7 @@ The bot uses Telegram reply keyboards for common actions such as:
 - `/new`
 - `/status`
 - `/stop`
+- `/project default`
 - quick project switching
 - quick session switching
 

@@ -18,11 +18,27 @@ test("parseIncomingText understands project commands, rename commands, and promp
     type: "command",
     command: "project_current"
   });
+  assert.deepEqual(parseIncomingText("/project add demo"), {
+    type: "command",
+    command: "project_add",
+    name: "demo",
+    path: null
+  });
   assert.deepEqual(parseIncomingText("/project add demo C:/work/demo"), {
     type: "command",
     command: "project_add",
     name: "demo",
     path: "C:/work/demo"
+  });
+  assert.deepEqual(parseIncomingText("/project default"), {
+    type: "command",
+    command: "project_default_show",
+    path: null
+  });
+  assert.deepEqual(parseIncomingText("/project default E:/codex project"), {
+    type: "command",
+    command: "project_default_set",
+    path: "E:/codex project"
   });
   assert.deepEqual(parseIncomingText("/use 2"), {
     type: "command",
@@ -64,9 +80,11 @@ test("formatStatus includes detailed run metadata when a run is active", () => {
       runningLastEventText: "Thinking...",
       runningLastEventAt: lastEventAt.toISOString()
     },
-    detachedRunning: true
+    detachedRunning: true,
+    defaultProjectRoot: "E:/codex project"
   });
 
+  assert.match(statusText, /Default project root: E:\/codex project/);
   assert.match(statusText, /Running: yes \(tracked from a previous bot instance, pid 1234\)/);
   assert.match(statusText, /Model: gpt-5.4/);
   assert.match(statusText, /Sandbox: workspace-write/);
@@ -79,6 +97,7 @@ test("formatStatus includes detailed run metadata when a run is active", () => {
 test("help text documents the core commands and workflow", () => {
   const helpText = buildHelpText();
   assert.match(helpText, /\/help - show this help/);
-  assert.match(helpText, /\/project add <name> <path> - add a local folder as a project/);
-  assert.match(helpText, /1\. \/project add demo/);
+  assert.match(helpText, /\/project add <name> \[path\] - add a local folder as a project/);
+  assert.match(helpText, /\/project default <path> - set the default project root/);
+  assert.match(helpText, /1\. \/project default E:\\codex project/);
 });

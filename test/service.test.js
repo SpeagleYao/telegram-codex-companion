@@ -539,3 +539,68 @@ test("falls back to sending progress messages when Telegram edits fail", async (
 
 
 
+
+test("adds a project without an explicit path by using the default root", async (t) => {
+  const { store, root } = createStore(t);
+  const defaultRoot = path.join(root, "default-projects");
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig({ defaultProjectRoot: defaultRoot }),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, "/project add demo"));
+
+  const savedProject = store.getProject("demo");
+  assert.equal(savedProject.cwd, path.join(defaultRoot, "demo"));
+  assert.equal(store.getUserBinding(111).currentProjectName, "demo");
+  assert.ok(fs.existsSync(savedProject.cwd));
+  assert.match(telegramApi.messages.at(-1).text, /default root/);
+});
+
+test("project default command persists an override and creates the root directory", async (t) => {
+  const { store, root } = createStore(t);
+  const defaultRoot = path.join(root, "custom-root");
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project default ${defaultRoot}`));
+  await service.handleUpdate(createUpdate(111, 500, "/project default"));
+
+  assert.equal(store.getUserBinding(111).defaultProjectRoot, defaultRoot);
+  assert.ok(fs.existsSync(defaultRoot));
+  assert.match(telegramApi.messages.at(-1).text, new RegExp(defaultRoot.replace(/\\/g, "\\\\")));
+});
+
+test("project use auto-creates an unknown project inside the default root", async (t) => {
+  const { store, root } = createStore(t);
+  const defaultRoot = path.join(root, "default-projects");
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig({ defaultProjectRoot: defaultRoot }),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, "/project use scratchpad"));
+
+  const project = store.getProject("scratchpad");
+  assert.equal(project.cwd, path.join(defaultRoot, "scratchpad"));
+  assert.equal(store.getUserBinding(111).currentProjectName, "scratchpad");
+  assert.ok(fs.existsSync(project.cwd));
+  assert.match(telegramApi.messages.at(-1).text, /Created/);
+});

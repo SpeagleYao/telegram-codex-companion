@@ -99,7 +99,7 @@ export function chunkText(text, maxLength) {
 
 export function formatProjects(projects, currentProjectName) {
   if (projects.length === 0) {
-    return "No projects saved yet. Use /project add <name> <path>.";
+    return "No projects saved yet. Use /project add <name> [path].";
   }
 
   return [
@@ -125,9 +125,9 @@ export function formatSessions(sessions, activeSessionId) {
   ].join("\n");
 }
 
-export function formatStatus({ project, session, binding, detachedRunning = false }) {
+export function formatStatus({ project, session, binding, detachedRunning = false, defaultProjectRoot = null }) {
   if (!project) {
-    return "No current project. Use /project add <name> <path> or /projects.";
+    return "No current project. Use /project add <name> [path] or /projects.";
   }
 
   const runningLabel = binding?.runningPid
@@ -139,6 +139,7 @@ export function formatStatus({ project, session, binding, detachedRunning = fals
   const lines = [
     `Project: ${project.name}`,
     `Path: ${project.cwd}`,
+    `Default project root: ${defaultProjectRoot || "not set"}`,
     `Running: ${runningLabel}`
   ];
 
@@ -193,9 +194,11 @@ export function buildHelpText() {
     "",
     "Project commands",
     "/projects - list saved projects",
-    "/project add <name> <path> - add a local folder as a project",
+    "/project add <name> [path] - add a local folder as a project",
     "/project use <name> - switch to a saved project",
     "/project current - show the current project and path",
+    "/project default - show the default project root",
+    "/project default <path> - set the default project root",
     "",
     "Session commands",
     "/new - start fresh on the next normal message",
@@ -210,10 +213,11 @@ export function buildHelpText() {
     "/help - show this help",
     "",
     "How to use",
-    "1. /project add demo E:\\work\\demo",
-    "2. /project use demo",
-    "3. /new",
-    "4. Send a normal text message to start or continue a session."
+    "1. /project default E:\\codex project",
+    "2. /project add demo",
+    "3. /project use demo",
+    "4. /new",
+    "5. Send a normal text message to start or continue a session."
   ].join("\n");
 }
 
@@ -225,7 +229,7 @@ export function buildMainKeyboard(currentProjectName = null) {
   const rows = [
     keyboardRow(["/projects", "/sessions"]),
     keyboardRow(["/new", "/status", "/stop"]),
-    keyboardRow(["/help"])
+    keyboardRow(["/project default", "/help"])
   ];
 
   if (currentProjectName) {
@@ -251,7 +255,7 @@ export function buildProjectsKeyboard(projects) {
   }
 
   rows.push(keyboardRow(["/new", "/status", "/sessions"]));
-  rows.push(keyboardRow(["/help"]));
+  rows.push(keyboardRow(["/project default", "/help"]));
 
   return {
     keyboard: rows,
@@ -272,7 +276,7 @@ export function buildSessionsKeyboard(sessions) {
   }
 
   rows.push(keyboardRow(["/new", "/status", "/projects"]));
-  rows.push(keyboardRow(["/help"]));
+  rows.push(keyboardRow(["/project default", "/help"]));
 
   return {
     keyboard: rows,

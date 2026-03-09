@@ -160,6 +160,51 @@ export class TelegramCompanionService {
     };
   }
 
+  getEffectiveDefaultProjectRoot(binding = null) {
+    return binding?.defaultProjectRoot || this.config.defaultProjectRoot || null;
+  }
+
+  resolveProjectTargetPath(name, rawPath, binding = null) {
+    if (rawPath) {
+      return {
+        targetPath: path.resolve(rawPath),
+        usedDefaultRoot: false,
+        defaultProjectRoot: null
+      };
+    }
+
+    const defaultProjectRoot = this.getEffectiveDefaultProjectRoot(binding);
+    if (!defaultProjectRoot) {
+      return {
+        targetPath: null,
+        usedDefaultRoot: false,
+        defaultProjectRoot: null
+      };
+    }
+
+    return {
+      targetPath: path.join(defaultProjectRoot, name),
+      usedDefaultRoot: true,
+      defaultProjectRoot
+    };
+  }
+
+  ensureDirectoryExists(targetPath, createIfMissing = false) {
+    if (fs.existsSync(targetPath)) {
+      if (!fs.statSync(targetPath).isDirectory()) {
+        throw new Error(`Path exists but is not a directory: ${targetPath}`);
+      }
+      return { created: false };
+    }
+
+    if (!createIfMissing) {
+      throw new Error(`Path does not exist or is not a directory: ${targetPath}`);
+    }
+
+    fs.mkdirSync(targetPath, { recursive: true });
+    return { created: true };
+  }
+
   async handleUpdate(update) {
     const message = update?.message;
     if (!message?.text || !message.from || !message.chat) {
@@ -322,33 +367,61 @@ export class TelegramCompanionService {
           return;
         }
 
-        const targetPath = path.resolve(parsed.path);
-        if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isDirectory()) {
-          await this.safeSend(chatId, `Path does not exist or is not a directory: ${targetPath}`);
-          return;
-        }
-
         if (this.store.getProject(parsed.name)) {
           await this.safeSend(chatId, `Project ${parsed.name} already exists.`);
           return;
         }
 
-        const project = this.store.addProject({ name: parsed.name, cwd: targetPath });
         const binding = this.store.getUserBinding(userId);
+        const resolvedPath = this.resolveProjectTargetPath(parsed.name, parsed.path, binding);
+        if (!resolvedPath.targetPath) {
+          await this.safeSend(chatId, "No default project root is set. Use /project default <path> or /project add <name> [path].");
+          return;
+        }
+
+        try {
+          this.ensureDirectoryExists(resolvedPath.targetPath, resolvedPath.usedDefaultRoot);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await this.safeSend(chatId, message);
+          return;
+        }
+
+        const project = this.store.addProject({ name: parsed.name, cwd: resolvedPath.targetPath });
         if (!binding?.currentProjectName) {
           this.store.setCurrentProject(userId, project.name, null);
         }
 
-        await this.safeSend(chatId, `Saved project ${project.name} -> ${project.cwd}`, {
+        const savedText = resolvedPath.usedDefaultRoot
+          ? `Saved project ${project.name} -> ${project.cwd} (default root)`
+          : `Saved project ${project.name} -> ${project.cwd}`;
+        await this.safeSend(chatId, savedText, {
           reply_markup: buildMainKeyboard(project.name)
         });
         return;
       }
       case "project_use": {
-        const project = this.store.getProject(parsed.name);
+        const binding = this.store.getUserBinding(userId);
+        let project = this.store.getProject(parsed.name);
+        let autoCreated = false;
+
         if (!project) {
-          await this.safeSend(chatId, `Unknown project: ${parsed.name}`);
-          return;
+          const resolvedPath = this.resolveProjectTargetPath(parsed.name, null, binding);
+          if (!resolvedPath.targetPath) {
+            await this.safeSend(chatId, `Unknown project: ${parsed.name}`);
+            return;
+          }
+
+          try {
+            const ensureResult = this.ensureDirectoryExists(resolvedPath.targetPath, true);
+            autoCreated = ensureResult.created;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            await this.safeSend(chatId, message);
+            return;
+          }
+
+          project = this.store.addProject({ name: parsed.name, cwd: resolvedPath.targetPath });
         }
 
         if (!fs.existsSync(project.cwd)) {
@@ -357,9 +430,11 @@ export class TelegramCompanionService {
         }
 
         this.store.setCurrentProject(userId, project.name, project.activeSessionId ?? null);
-        const text = project.activeSessionId
-          ? `Current project: ${project.name}. Restored the latest session.`
-          : `Current project: ${project.name}. Use /new and then send a prompt.`;
+        const text = autoCreated
+          ? `Current project: ${project.name}. Created ${project.cwd}. Use /new and then send a prompt.`
+          : project.activeSessionId
+            ? `Current project: ${project.name}. Restored the latest session.`
+            : `Current project: ${project.name}. Use /new and then send a prompt.`;
         await this.safeSend(chatId, text, {
           reply_markup: buildMainKeyboard(project.name)
         });
@@ -370,20 +445,59 @@ export class TelegramCompanionService {
         const project = binding?.currentProjectName
           ? this.store.getProject(binding.currentProjectName)
           : null;
+        const defaultProjectRoot = this.getEffectiveDefaultProjectRoot(binding);
+        const lines = project
+          ? [`Current project: ${project.name}`, project.cwd]
+          : ["No current project selected."];
+        lines.push(`Default project root: ${defaultProjectRoot || "not set"}`);
         await this.safeSend(
           chatId,
-          project ? `Current project: ${project.name}\n${project.cwd}` : "No current project selected.",
+          lines.join("\n"),
           {
             reply_markup: buildMainKeyboard(project?.name ?? null)
           }
         );
         return;
       }
+      case "project_default_show": {
+        const binding = this.store.getUserBinding(userId);
+        const defaultProjectRoot = this.getEffectiveDefaultProjectRoot(binding);
+        await this.safeSend(
+          chatId,
+          defaultProjectRoot
+            ? `Default project root: ${defaultProjectRoot}`
+            : "No default project root set. Use /project default <path>.",
+          {
+            reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
+          }
+        );
+        return;
+      }
+      case "project_default_set": {
+        const binding = this.store.getUserBinding(userId);
+        const targetPath = path.resolve(parsed.path);
+
+        try {
+          this.ensureDirectoryExists(targetPath, true);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          await this.safeSend(chatId, message, {
+            reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
+          });
+          return;
+        }
+
+        this.store.setDefaultProjectRoot(userId, targetPath);
+        await this.safeSend(chatId, `Default project root set to: ${targetPath}`, {
+          reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
+        });
+        return;
+      }
       case "project_help": {
         const binding = this.store.getUserBinding(userId);
         await this.safeSend(
           chatId,
-          "Use /project add <name> <path>, /project use <name>, or /project current.",
+          "Use /project add <name> [path], /project use <name>, /project current, or /project default <path>.",
           {
             reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
           }
@@ -508,7 +622,13 @@ export class TelegramCompanionService {
           : null;
         const session = binding?.activeSessionId ? this.store.getSessionById(binding.activeSessionId) : null;
         const detachedRunning = Boolean(binding?.runningPid) && !this.activeRuns.has(userId);
-        await this.safeSend(chatId, formatStatus({ project, session, binding, detachedRunning }), {
+        await this.safeSend(chatId, formatStatus({
+          project,
+          session,
+          binding,
+          detachedRunning,
+          defaultProjectRoot: this.getEffectiveDefaultProjectRoot(binding)
+        }), {
           reply_markup: buildMainKeyboard(project?.name ?? null)
         });
         return;
@@ -667,7 +787,7 @@ export class TelegramCompanionService {
     }
 
     if (!binding?.currentProjectName) {
-      await this.safeSend(chatId, "No current project selected. Use /project add <name> <path> or /project use <name>.", {
+      await this.safeSend(chatId, "No current project selected. Use /project add <name> [path] or /project use <name>.", {
         reply_markup: buildMainKeyboard()
       });
       return;

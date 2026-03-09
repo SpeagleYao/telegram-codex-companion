@@ -6,6 +6,7 @@ const USER_BINDING_SELECT = `
   telegram_user_id AS telegramUserId,
   current_project_name AS currentProjectName,
   active_session_id AS activeSessionId,
+  default_project_root AS defaultProjectRoot,
   running_session_id AS runningSessionId,
   running_pid AS runningPid,
   running_started_at AS runningStartedAt,
@@ -117,6 +118,7 @@ export class CompanionStateStore {
         telegram_user_id INTEGER PRIMARY KEY,
         current_project_name TEXT,
         active_session_id INTEGER,
+        default_project_root TEXT,
         running_session_id INTEGER,
         running_pid INTEGER,
         running_started_at TEXT,
@@ -143,6 +145,7 @@ export class CompanionStateStore {
   migrateStateSchema() {
     const userBindingColumns = listColumnNames(this.stateDb, "user_bindings");
     const requiredColumns = {
+      default_project_root: "TEXT",
       running_started_at: "TEXT",
       running_project_name: "TEXT",
       running_cwd: "TEXT",
@@ -230,11 +233,12 @@ export class CompanionStateStore {
           telegram_user_id,
           current_project_name,
           active_session_id,
+          default_project_root,
           running_session_id,
           running_pid,
           updated_at
         )
-        VALUES (?, NULL, NULL, NULL, NULL, ?)
+        VALUES (?, NULL, NULL, NULL, NULL, NULL, ?)
       `)
       .run(telegramUserId, timestamp);
 
@@ -263,6 +267,21 @@ export class CompanionStateStore {
         WHERE running_pid IS NOT NULL
       `)
       .all();
+  }
+
+  setDefaultProjectRoot(telegramUserId, defaultProjectRoot) {
+    this.ensureUserBinding(telegramUserId);
+    const timestamp = nowIso();
+
+    this.stateDb
+      .prepare(`
+        UPDATE user_bindings
+        SET default_project_root = ?, updated_at = ?
+        WHERE telegram_user_id = ?
+      `)
+      .run(defaultProjectRoot, timestamp, telegramUserId);
+
+    return this.getUserBinding(telegramUserId);
   }
 
   setCurrentProject(telegramUserId, projectName, activeSessionId = null) {

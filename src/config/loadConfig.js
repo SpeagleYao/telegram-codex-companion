@@ -100,6 +100,14 @@ function resolvePathValue(name, fileValues, defaultRelativePath) {
   return path.resolve(process.cwd(), rawValue);
 }
 
+function resolveOptionalPathValue(name, fileValues) {
+  const rawValue = resolveValue(name, fileValues);
+  if (rawValue === undefined || rawValue === "") {
+    return null;
+  }
+  return path.resolve(process.cwd(), rawValue);
+}
+
 export function loadConfig() {
   const fileValues = parseEnvFile(path.resolve(process.cwd(), ".env"));
 
@@ -121,6 +129,7 @@ export function loadConfig() {
     codexSandbox: resolveValue("CODEX_SANDBOX", fileValues) || "",
     codexModel: resolveValue("CODEX_MODEL", fileValues) || "",
     codexReasoningEffort: resolveValue("CODEX_REASONING_EFFORT", fileValues) || "",
+    defaultProjectRoot: resolveOptionalPathValue("DEFAULT_PROJECT_ROOT", fileValues),
     debugLogEnabled: parseBooleanValue("DEBUG_LOG_ENABLED", fileValues, true),
     debugLogPath: resolvePathValue("DEBUG_LOG_PATH", fileValues, "./logs/bot-debug.jsonl"),
     defaultReplyChunkSize: parseIntValue("DEFAULT_REPLY_CHUNK_SIZE", fileValues, 3500),
@@ -128,4 +137,3 @@ export function loadConfig() {
     pollRetryDelayMs: parseIntValue("POLL_RETRY_DELAY_MS", fileValues, 3000)
   };
 }
-
