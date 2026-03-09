@@ -1,12 +1,33 @@
 import fs from "node:fs";
 import path from "node:path";
 
+const UTF8_BOM = "\ufeff";
+
 export function summarizeText(text, maxPreviewLength = 120) {
   const normalized = String(text || "").replace(/\s+/gu, " ").trim();
   if (normalized.length <= maxPreviewLength * 2 + 5) {
     return normalized;
   }
   return `${normalized.slice(0, maxPreviewLength)} ... ${normalized.slice(-maxPreviewLength)}`;
+}
+
+function ensureUtf8Bom(filePath) {
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, UTF8_BOM, "utf8");
+    return;
+  }
+
+  const fileBuffer = fs.readFileSync(filePath);
+  if (fileBuffer.length === 0) {
+    fs.writeFileSync(filePath, UTF8_BOM, "utf8");
+    return;
+  }
+
+  if (fileBuffer[0] === 0xef && fileBuffer[1] === 0xbb && fileBuffer[2] === 0xbf) {
+    return;
+  }
+
+  fs.writeFileSync(filePath, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), fileBuffer]));
 }
 
 export class DebugLogger {
@@ -16,6 +37,7 @@ export class DebugLogger {
 
     if (this.enabled && this.filePath) {
       fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
+      ensureUtf8Bom(this.filePath);
     }
   }
 
