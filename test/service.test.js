@@ -180,6 +180,8 @@ test("creates a new session, streams progress, and resumes it on the next prompt
   await service.handleUpdate(createUpdate(111, 500, "fix the bug in this repo"));
   await flush();
 
+  assert.equal(telegramApi.messages.find((entry) => entry.text.includes("Starting a new session in demo...")).options.reply_markup, undefined);
+
   const firstSession = store.listSessionsForProject("demo")[0];
   assert.equal(runner.calls[0].resumeSessionId, null);
   assert.equal(firstSession.codexSessionId, "thread-1");
@@ -420,6 +422,7 @@ test("falls back to sending progress messages when Telegram edits fail", async (
 
   assert.ok(telegramApi.edits.length > 0);
   assert.ok(telegramApi.messages.some((entry) => entry.text.includes("Session started. Gathering context")));
+  assert.ok(telegramApi.messages.some((entry) => entry.options.reply_markup));
 });
 
 

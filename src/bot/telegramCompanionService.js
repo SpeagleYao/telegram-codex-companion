@@ -628,8 +628,7 @@ export class TelegramCompanionService {
 
     const progressMessage = await this.telegramApi.sendMessage(
       chatId,
-      isResume ? `Resuming session in ${project.name}...` : `Starting a new session in ${project.name}...`,
-      { reply_markup: replyMarkup }
+      isResume ? `Resuming session in ${project.name}...` : `Starting a new session in ${project.name}...`
     );
     const progressTracker = this.createProgressTracker(chatId, progressMessage.message_id, replyMarkup);
 

@@ -14,13 +14,15 @@ export class TelegramApi {
       body: JSON.stringify(payload)
     });
 
+    const body = await response.json().catch(() => null);
+
     if (!response.ok) {
-      throw new Error(`Telegram API ${method} failed with HTTP ${response.status}`);
+      const description = body?.description ? `: ${body.description}` : "";
+      throw new Error(`Telegram API ${method} failed with HTTP ${response.status}${description}`);
     }
 
-    const body = await response.json();
-    if (!body.ok) {
-      throw new Error(body.description || `Telegram API ${method} failed`);
+    if (!body?.ok) {
+      throw new Error(body?.description || `Telegram API ${method} failed`);
     }
 
     return body.result;
