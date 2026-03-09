@@ -121,8 +121,11 @@ export function loadConfig() {
     codexSandbox: resolveValue("CODEX_SANDBOX", fileValues) || "",
     codexModel: resolveValue("CODEX_MODEL", fileValues) || "",
     codexReasoningEffort: resolveValue("CODEX_REASONING_EFFORT", fileValues) || "",
+    debugLogEnabled: parseBooleanValue("DEBUG_LOG_ENABLED", fileValues, true),
+    debugLogPath: resolvePathValue("DEBUG_LOG_PATH", fileValues, "./logs/bot-debug.jsonl"),
     defaultReplyChunkSize: parseIntValue("DEFAULT_REPLY_CHUNK_SIZE", fileValues, 3500),
     pollTimeoutSeconds: parseIntValue("POLL_TIMEOUT_SECONDS", fileValues, 20),
     pollRetryDelayMs: parseIntValue("POLL_RETRY_DELAY_MS", fileValues, 3000)
   };
 }
+

@@ -309,6 +309,39 @@ test("splits long replies into multiple Telegram messages", async (t) => {
   assert.ok(answerChunks.length >= 2);
 });
 
+test("merges back-to-back long Telegram prompt fragments before starting Codex", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  runner.enqueue({
+    threadId: "thread-merged",
+    output: "Merged answer"
+  });
+
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+
+  const firstPart = "a".repeat(3600);
+  const secondPart = "b".repeat(300);
+  await service.handleUpdate(createUpdate(111, 500, firstPart));
+  await service.handleUpdate(createUpdate(111, 500, secondPart));
+  await new Promise((resolve) => setTimeout(resolve, 1700));
+  await flush();
+
+  assert.equal(runner.calls.length, 1);
+  assert.equal(runner.calls[0].prompt, firstPart + secondPart);
+  assert.ok(telegramApi.messages.some((entry) => entry.text.includes("Merged answer")));
+});
+
 test("start and projects attach a mobile-friendly reply keyboard", async (t) => {
   const { store, root } = createStore(t);
   const projectPath = path.join(root, "demo-project");
@@ -388,3 +421,5 @@ test("falls back to sending progress messages when Telegram edits fail", async (
   assert.ok(telegramApi.edits.length > 0);
   assert.ok(telegramApi.messages.some((entry) => entry.text.includes("Session started. Gathering context")));
 });
+
+

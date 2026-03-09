@@ -10,3 +10,7 @@ node_modules/
 coverage/
 .DS_Store
 Thumbs.db
+
+logs/
+*.jsonl
+

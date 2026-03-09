@@ -11,6 +11,7 @@ import {
   formatStatus
 } from "./messageFormatter.js";
 import { parseIncomingText } from "./commandParser.js";
+import { summarizeText } from "../logging/debugLogger.js";
 
 function isValidProjectName(name) {
   return /^[A-Za-z0-9._-]+$/u.test(name);
@@ -36,6 +37,9 @@ function formatItemType(itemType) {
   return String(itemType || "work").replace(/_/gu, " ");
 }
 
+const LONG_PROMPT_MERGE_MIN_LENGTH = 3500;
+const LONG_PROMPT_MERGE_WINDOW_MS = 1500;
+
 function defaultProcessUtils() {
   return {
     isPidAlive(pid) {
@@ -53,13 +57,15 @@ function defaultProcessUtils() {
 }
 
 export class TelegramCompanionService {
-  constructor({ config, store, runner, telegramApi, processUtils = defaultProcessUtils() }) {
+  constructor({ config, store, runner, telegramApi, processUtils = defaultProcessUtils(), debugLogger = null }) {
     this.config = config;
     this.store = store;
     this.runner = runner;
     this.telegramApi = telegramApi;
     this.processUtils = processUtils;
+    this.debugLogger = debugLogger;
     this.activeRuns = new Map();
+    this.pendingPromptBatches = new Map();
   }
 
   async recoverRunningState() {
@@ -90,6 +96,15 @@ export class TelegramCompanionService {
     const userId = message.from.id;
     const chatId = message.chat.id;
 
+    this.debugLogger?.log("telegram.message.received", {
+      updateId: update.update_id ?? null,
+      messageId: message.message_id ?? null,
+      userId,
+      chatId,
+      textLength: message.text.length,
+      textPreview: summarizeText(message.text)
+    });
+
     if (!this.config.allowedUserIds.has(userId)) {
       await this.safeSend(chatId, "Unauthorized Telegram user.");
       return;
@@ -103,16 +118,108 @@ export class TelegramCompanionService {
     this.store.ensureUserBinding(userId);
 
     const parsed = parseIncomingText(message.text);
+    this.debugLogger?.log("telegram.message.parsed", {
+      userId,
+      chatId,
+      parsedType: parsed.type,
+      command: parsed.command ?? null,
+      promptLength: parsed.prompt?.length ?? null
+    });
+
     if (parsed.type === "empty") {
       return;
     }
 
     if (parsed.type === "prompt") {
-      await this.handlePrompt({ userId, chatId, prompt: parsed.prompt });
+      await this.enqueuePrompt({ userId, chatId, prompt: parsed.prompt });
       return;
     }
 
+    await this.flushPendingPrompt(userId);
     await this.handleCommand({ userId, chatId, parsed });
+  }
+
+  shouldDelayPrompt(prompt) {
+    return prompt.length >= LONG_PROMPT_MERGE_MIN_LENGTH;
+  }
+
+  schedulePromptBatchFlush(userId) {
+    return setTimeout(() => {
+      void this.flushPendingPrompt(userId).catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.debugLogger?.log("telegram.prompt.batch_flush_failed", {
+          userId,
+          errorPreview: summarizeText(message)
+        });
+        console.error("Failed to flush pending Telegram prompt: " + message);
+      });
+    }, LONG_PROMPT_MERGE_WINDOW_MS);
+  }
+
+  async enqueuePrompt({ userId, chatId, prompt }) {
+    const existingBatch = this.pendingPromptBatches.get(userId);
+    this.debugLogger?.log("telegram.prompt.enqueue", {
+      userId,
+      chatId,
+      promptLength: prompt.length,
+      promptPreview: summarizeText(prompt),
+      delayed: this.shouldDelayPrompt(prompt),
+      hasExistingBatch: Boolean(existingBatch)
+    });
+
+    if (existingBatch) {
+      existingBatch.parts.push(prompt);
+      clearTimeout(existingBatch.timer);
+      existingBatch.timer = this.schedulePromptBatchFlush(userId);
+      this.debugLogger?.log("telegram.prompt.batch_extended", {
+        userId,
+        chatId,
+        batchedParts: existingBatch.parts.length,
+        mergedLength: existingBatch.parts.join("").length
+      });
+      return;
+    }
+
+    if (!this.shouldDelayPrompt(prompt)) {
+      await this.handlePrompt({ userId, chatId, prompt });
+      return;
+    }
+
+    const batch = {
+      chatId,
+      parts: [prompt],
+      timer: this.schedulePromptBatchFlush(userId)
+    };
+    this.pendingPromptBatches.set(userId, batch);
+    this.debugLogger?.log("telegram.prompt.batch_started", {
+      userId,
+      chatId,
+      batchedParts: 1,
+      mergedLength: prompt.length
+    });
+  }
+
+  async flushPendingPrompt(userId) {
+    const batch = this.pendingPromptBatches.get(userId);
+    if (!batch) {
+      return;
+    }
+
+    this.pendingPromptBatches.delete(userId);
+    clearTimeout(batch.timer);
+    const mergedPrompt = batch.parts.join("");
+    this.debugLogger?.log("telegram.prompt.batch_flushed", {
+      userId,
+      chatId: batch.chatId,
+      batchedParts: batch.parts.length,
+      mergedLength: mergedPrompt.length,
+      promptPreview: summarizeText(mergedPrompt)
+    });
+    await this.handlePrompt({
+      userId,
+      chatId: batch.chatId,
+      prompt: mergedPrompt
+    });
   }
 
   async handleCommand({ userId, chatId, parsed }) {
@@ -435,6 +542,10 @@ export class TelegramCompanionService {
         })
         .catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
+          this.debugLogger?.log("telegram.progress.send_failed", {
+            chatId: progressTracker.chatId,
+            errorPreview: summarizeText(message)
+          });
           console.error("Failed to send Telegram progress message: " + message);
         });
       return;
@@ -444,6 +555,11 @@ export class TelegramCompanionService {
       .editMessageText(progressTracker.chatId, progressTracker.messageId, nextText)
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
+        this.debugLogger?.log("telegram.progress.edit_failed", {
+          chatId: progressTracker.chatId,
+          messageId: progressTracker.messageId,
+          errorPreview: summarizeText(message)
+        });
         progressTracker.useSendFallback = true;
         console.error("Failed to edit Telegram progress message: " + message);
         return this.telegramApi.sendMessage(progressTracker.chatId, nextText, {
@@ -454,6 +570,10 @@ export class TelegramCompanionService {
       })
       .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
+        this.debugLogger?.log("telegram.progress.fallback_failed", {
+          chatId: progressTracker.chatId,
+          errorPreview: summarizeText(message)
+        });
         console.error("Failed to send Telegram progress fallback message: " + message);
       });
   }
@@ -490,6 +610,16 @@ export class TelegramCompanionService {
     }
 
     const activeSession = binding.activeSessionId ? this.store.getSessionById(binding.activeSessionId) : null;
+    this.debugLogger?.log("telegram.prompt.dispatch", {
+      userId,
+      chatId,
+      projectName: project.name,
+      activeSessionId: activeSession?.id ?? null,
+      resumeSessionId: activeSession?.codexSessionId ?? null,
+      promptLength: prompt.length,
+      promptPreview: summarizeText(prompt)
+    });
+
     const isResume = Boolean(activeSession);
     const pendingTitle = buildSessionTitle(prompt);
     let createdSessionId = null;
@@ -518,6 +648,13 @@ export class TelegramCompanionService {
             });
             createdSessionId = session.id;
             this.store.setActiveSession(userId, session.id);
+            this.debugLogger?.log("telegram.session.created", {
+              userId,
+              chatId,
+              sessionId: session.id,
+              codexSessionId: threadId,
+              title: pendingTitle
+            });
             this.store.setRunState(userId, {
               runningSessionId: session.id,
               runningPid: runHandle?.pid ?? null
@@ -526,11 +663,25 @@ export class TelegramCompanionService {
         },
         onEvent: (event) => {
           const progressText = this.describeProgressEvent(event);
+          if (progressText) {
+            this.debugLogger?.log("telegram.progress.event", {
+              userId,
+              chatId,
+              eventType: event.type,
+              progressText
+            });
+          }
           this.scheduleProgressUpdate(progressTracker, progressText);
         }
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      this.debugLogger?.log("telegram.prompt.start_failed", {
+        userId,
+        chatId,
+        projectName: project.name,
+        errorPreview: summarizeText(message)
+      });
       this.scheduleProgressUpdate(progressTracker, `Codex could not start.\n\n${message}`, true);
       return;
     }
@@ -557,6 +708,14 @@ export class TelegramCompanionService {
         this.store.clearRunState(userId);
         this.activeRuns.delete(userId);
 
+        this.debugLogger?.log("telegram.prompt.completed", {
+          userId,
+          chatId,
+          projectName: project.name,
+          sessionId: finalSessionId,
+          outputLength: result.output.length,
+          outputPreview: summarizeText(result.output)
+        });
         this.scheduleProgressUpdate(progressTracker, `Completed in ${project.name}.`, true);
         await this.safeSend(chatId, result.output, {
           reply_markup: replyMarkup
@@ -571,6 +730,13 @@ export class TelegramCompanionService {
         this.activeRuns.delete(userId);
 
         const message = error instanceof Error ? error.message : String(error);
+        this.debugLogger?.log("telegram.prompt.failed", {
+          userId,
+          chatId,
+          projectName: project.name,
+          sessionId,
+          errorPreview: summarizeText(message)
+        });
         this.scheduleProgressUpdate(progressTracker, `Run failed in ${project.name}.`, true);
         await this.safeSend(chatId, `Codex run failed.\n\n${message}`, {
           reply_markup: replyMarkup
@@ -580,6 +746,13 @@ export class TelegramCompanionService {
 
   async safeSend(chatId, text, options = {}) {
     const chunks = chunkText(text, this.config.defaultReplyChunkSize);
+    this.debugLogger?.log("telegram.message.send", {
+      chatId,
+      totalLength: text.length,
+      chunkCount: chunks.length,
+      firstChunkLength: chunks[0]?.length ?? 0,
+      textPreview: summarizeText(text)
+    });
     for (const [index, chunk] of chunks.entries()) {
       await this.telegramApi.sendMessage(chatId, chunk, index === 0 ? options : {});
     }

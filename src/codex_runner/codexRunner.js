@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
+import { summarizeText } from "../logging/debugLogger.js";
 
 function extractMessageText(item) {
   if (!item || typeof item !== "object") {
@@ -56,10 +58,50 @@ function normalizeExecutable(executable) {
   return executable;
 }
 
+export function resolveWindowsCodexNodeEntry(
+  executable,
+  {
+    platform = process.platform,
+    appData = process.env.APPDATA,
+    nodeExecutable = process.execPath,
+    exists = fs.existsSync
+  } = {}
+) {
+  if (platform !== "win32") {
+    return null;
+  }
+
+  const candidates = [];
+  const executableText = String(executable || "");
+  const lowerExecutable = executableText.toLowerCase();
+
+  if (lowerExecutable.endsWith(".cmd")) {
+    candidates.push(path.join(path.dirname(executableText), "node_modules", "@openai", "codex", "bin", "codex.js"));
+  }
+
+  if (lowerExecutable === "codex" || /\\windowsapps\\/iu.test(executableText)) {
+    if (appData) {
+      candidates.push(path.join(appData, "npm", "node_modules", "@openai", "codex", "bin", "codex.js"));
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (exists(candidate)) {
+      return {
+        command: nodeExecutable,
+        argsPrefix: [candidate]
+      };
+    }
+  }
+
+  return null;
+}
+
 export class CodexRunner {
   constructor(config, options = {}) {
     this.config = config;
     this.spawnImpl = options.spawnImpl ?? spawn;
+    this.debugLogger = options.debugLogger ?? null;
   }
 
   buildArgs(prompt, resumeSessionId = null) {
@@ -92,27 +134,63 @@ export class CodexRunner {
 
   spawnChild(cwd, args) {
     const executable = normalizeExecutable(this.config.codexExecutable);
+    const nodeEntry = resolveWindowsCodexNodeEntry(executable);
+
+    if (nodeEntry) {
+      return {
+        child: this.spawnImpl(nodeEntry.command, [...nodeEntry.argsPrefix, ...args], {
+          cwd,
+          env: process.env,
+          windowsHide: true
+        }),
+        launchMode: "node_entry",
+        command: nodeEntry.command,
+        args: [...nodeEntry.argsPrefix, ...args]
+      };
+    }
 
     if (process.platform === "win32") {
       const command = [executable, ...args].map(quoteForShell).join(" ");
-      return this.spawnImpl(command, {
-        cwd,
-        env: process.env,
-        windowsHide: true,
-        shell: true
-      });
+      return {
+        child: this.spawnImpl(command, {
+          cwd,
+          env: process.env,
+          windowsHide: true,
+          shell: true
+        }),
+        launchMode: "shell_command",
+        command,
+        args: []
+      };
     }
 
-    return this.spawnImpl(executable, args, {
-      cwd,
-      env: process.env,
-      windowsHide: true
-    });
+    return {
+      child: this.spawnImpl(executable, args, {
+        cwd,
+        env: process.env,
+        windowsHide: true
+      }),
+      launchMode: "direct",
+      command: executable,
+      args
+    };
   }
 
   startRun({ cwd, prompt, resumeSessionId = null, onThreadId = null, onEvent = null }) {
     const args = this.buildArgs(prompt, resumeSessionId);
-    const child = this.spawnChild(cwd, args);
+    const spawnResult = this.spawnChild(cwd, args);
+    const child = spawnResult.child;
+
+    this.debugLogger?.log("codex.run.started", {
+      cwd,
+      resumeSessionId,
+      promptLength: prompt.length,
+      promptPreview: summarizeText(prompt),
+      launchMode: spawnResult.launchMode,
+      command: spawnResult.command,
+      args: spawnResult.args,
+      argsLength: args.join(" ").length
+    });
 
     let threadId = resumeSessionId;
     let stdoutText = "";
@@ -148,6 +226,7 @@ export class CodexRunner {
 
       if (parsed?.type === "thread.started" && parsed.thread_id) {
         threadId = parsed.thread_id;
+        this.debugLogger?.log("codex.thread.started", { threadId });
         notifyThreadId(threadId);
         return;
       }
@@ -174,6 +253,9 @@ export class CodexRunner {
 
     const promise = new Promise((resolve, reject) => {
       child.on("error", (error) => {
+        this.debugLogger?.log("codex.run.error", {
+          message: error instanceof Error ? error.message : String(error)
+        });
         reject(error);
       });
 
@@ -182,6 +264,12 @@ export class CodexRunner {
         const output = agentMessages.filter(Boolean).join("\n\n").trim();
 
         if (code === 0) {
+          this.debugLogger?.log("codex.run.completed", {
+            threadId,
+            outputLength: output.length,
+            outputPreview: summarizeText(output),
+            stderrLength: stderrText.trim().length
+          });
           resolve({
             threadId,
             output,
@@ -206,6 +294,13 @@ export class CodexRunner {
         }
 
         const reason = reasonParts.filter(Boolean).join("\n\n") || `Codex exited with code ${code}`;
+        this.debugLogger?.log("codex.run.failed", {
+          threadId,
+          exitCode: code,
+          signal,
+          reasonPreview: summarizeText(reason),
+          stderrLength: stderrText.trim().length
+        });
         const error = new Error(reason);
         error.threadId = threadId;
         reject(error);
