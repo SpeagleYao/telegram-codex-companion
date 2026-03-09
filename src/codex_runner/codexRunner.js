@@ -77,6 +77,10 @@ export class CodexRunner {
       args.push("--model", this.config.codexModel);
     }
 
+    if (this.config.codexReasoningEffort) {
+      args.push("--config", "model_reasoning_effort=" + this.config.codexReasoningEffort);
+    }
+
     if (resumeSessionId) {
       args.push("resume", resumeSessionId, prompt);
     } else {

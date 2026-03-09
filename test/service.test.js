@@ -8,9 +8,10 @@ import { TelegramCompanionService } from "../src/bot/telegramCompanionService.js
 import { CompanionStateStore } from "../src/state/store.js";
 
 class FakeTelegramApi {
-  constructor() {
+  constructor(options = {}) {
     this.messages = [];
     this.edits = [];
+    this.failEdit = options.failEdit ?? false;
   }
 
   async sendMessage(chatId, text, options = {}) {
@@ -21,6 +22,9 @@ class FakeTelegramApi {
 
   async editMessageText(chatId, messageId, text, options = {}) {
     this.edits.push({ chatId, messageId, text, options });
+    if (this.failEdit) {
+      throw new Error("edit failed");
+    }
     return { ok: true };
   }
 }
@@ -181,6 +185,7 @@ test("creates a new session, streams progress, and resumes it on the next prompt
   assert.equal(firstSession.codexSessionId, "thread-1");
   assert.equal(store.getUserBinding(111).activeSessionId, firstSession.id);
   assert.ok(telegramApi.edits.length > 0);
+  assert.deepEqual(telegramApi.edits[0].options, {});
 
   await service.handleUpdate(createUpdate(111, 500, "now add tests"));
   await flush();
@@ -330,3 +335,56 @@ test("start and projects attach a mobile-friendly reply keyboard", async (t) => 
   assert.ok(keyboard.includes("/status"));
 });
 
+
+test("help command returns the detailed help text and keyboard", async (t) => {
+  const { store } = createStore(t);
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, "/help"));
+
+  const combinedText = telegramApi.messages.map((message) => message.text).join("\n");
+  assert.match(combinedText, /Project commands/);
+  assert.match(combinedText, /\/help - show this help/);
+  const firstReply = telegramApi.messages[0];
+  const keyboard = firstReply.options.reply_markup.keyboard.flat().map((button) => button.text);
+  assert.ok(keyboard.includes("/help"));
+});
+
+test("falls back to sending progress messages when Telegram edits fail", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi({ failEdit: true });
+  const runner = new FakeRunner();
+  runner.enqueue({
+    threadId: "thread-fallback",
+    output: "Answer",
+    pid: 1111,
+    events: [
+      { type: "thread.started", thread_id: "thread-fallback" },
+      { type: "item.started", item: { type: "exec_command" } }
+    ]
+  });
+
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, "/project add demo " + projectPath));
+  await service.handleUpdate(createUpdate(111, 500, "debug this repo"));
+  await flush();
+
+  assert.ok(telegramApi.edits.length > 0);
+  assert.ok(telegramApi.messages.some((entry) => entry.text.includes("Session started. Gathering context")));
+});

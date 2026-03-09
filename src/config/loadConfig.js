@@ -120,6 +120,7 @@ export function loadConfig() {
     codexFullAuto: parseBooleanValue("CODEX_FULL_AUTO", fileValues, true),
     codexSandbox: resolveValue("CODEX_SANDBOX", fileValues) || "",
     codexModel: resolveValue("CODEX_MODEL", fileValues) || "",
+    codexReasoningEffort: resolveValue("CODEX_REASONING_EFFORT", fileValues) || "",
     defaultReplyChunkSize: parseIntValue("DEFAULT_REPLY_CHUNK_SIZE", fileValues, 3500),
     pollTimeoutSeconds: parseIntValue("POLL_TIMEOUT_SECONDS", fileValues, 20),
     pollRetryDelayMs: parseIntValue("POLL_RETRY_DELAY_MS", fileValues, 3000)

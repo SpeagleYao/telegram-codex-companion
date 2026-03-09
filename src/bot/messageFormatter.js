@@ -91,19 +91,29 @@ export function buildHelpText() {
   return [
     "Telegram Codex Companion",
     "",
-    "/projects",
-    "/project add <name> <path>",
-    "/project use <name>",
-    "/project current",
-    "/new",
-    "/sessions",
-    "/use <n>",
-    "/rename <title>",
-    "/rename <n> <title>",
-    "/status",
-    "/stop",
+    "Project commands",
+    "/projects - list saved projects",
+    "/project add <name> <path> - add a local folder as a project",
+    "/project use <name> - switch to a saved project",
+    "/project current - show the current project and path",
     "",
-    "Send a normal text message to continue the current session."
+    "Session commands",
+    "/new - start fresh on the next normal message",
+    "/sessions - list sessions for the current project",
+    "/use <n> - switch to a session from /sessions",
+    "/rename <title> - rename the active session",
+    "/rename <n> <title> - rename a listed session",
+    "",
+    "Run commands",
+    "/status - show current project, session, and run state",
+    "/stop - request stop for the current run",
+    "/help - show this help",
+    "",
+    "How to use",
+    "1. /project add demo E:\\work\\demo",
+    "2. /project use demo",
+    "3. /new",
+    "4. Send a normal text message to start or continue a session."
   ].join("\n");
 }
 
@@ -114,7 +124,8 @@ function keyboardRow(buttons) {
 export function buildMainKeyboard(currentProjectName = null) {
   const rows = [
     keyboardRow(["/projects", "/sessions"]),
-    keyboardRow(["/new", "/status", "/stop"])
+    keyboardRow(["/new", "/status", "/stop"]),
+    keyboardRow(["/help"])
   ];
 
   if (currentProjectName) {
@@ -140,6 +151,7 @@ export function buildProjectsKeyboard(projects) {
   }
 
   rows.push(keyboardRow(["/new", "/status", "/sessions"]));
+  rows.push(keyboardRow(["/help"]));
 
   return {
     keyboard: rows,
@@ -160,6 +172,7 @@ export function buildSessionsKeyboard(sessions) {
   }
 
   rows.push(keyboardRow(["/new", "/status", "/projects"]));
+  rows.push(keyboardRow(["/help"]));
 
   return {
     keyboard: rows,

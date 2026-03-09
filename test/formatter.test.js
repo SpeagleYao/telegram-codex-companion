@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { chunkText } from "../src/bot/messageFormatter.js";
+import { buildHelpText, chunkText } from "../src/bot/messageFormatter.js";
 import { parseIncomingText } from "../src/bot/commandParser.js";
 
 test("chunkText splits long replies on boundaries", () => {
@@ -40,4 +40,11 @@ test("parseIncomingText understands project commands, rename commands, and promp
     index: 2,
     title: "bugfix session"
   });
+});
+
+test("help text documents the core commands and workflow", () => {
+  const helpText = buildHelpText();
+  assert.match(helpText, /\/help - show this help/);
+  assert.match(helpText, /\/project add <name> <path> - add a local folder as a project/);
+  assert.match(helpText, /1\. \/project add demo/);
 });

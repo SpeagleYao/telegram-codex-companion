@@ -2,7 +2,36 @@
 
 Use Codex CLI from your phone through a private Telegram bot.
 
-`telegram-codex-companion` turns a Telegram private chat into a small-screen control surface for Codex running on your own Windows machine. It is designed for people who want to keep working with Codex while away from their desk without relying on remote desktop software.
+`telegram-codex-companion` turns a Telegram private chat into a small-screen control surface for Codex running on your own Windows machine. It is meant for a single person who already uses Codex locally and wants a simpler alternative to remote desktop when away from the keyboard.
+
+## Can A Beginner Use This Quickly?
+
+Yes, but only if the first-run path is explicit.
+
+For a new user, the real blockers are usually not inside this repo. They are:
+
+1. creating a Telegram bot with `@BotFather`
+2. finding your Telegram numeric user id
+3. making sure `codex` already works in a normal terminal
+
+If those three are ready, this project is quick to start. This README is organized around that first successful run.
+
+## Who This Is For
+
+This repo is a good fit if you want all of the following:
+
+- Codex runs on your own Windows machine
+- you control it from a private Telegram chat
+- you want project switching and session history
+- you do not need remote desktop, browser streaming, or shell passthrough
+
+This repo is probably not the right starting point if you want:
+
+- a web UI
+- multi-user access
+- Telegram groups
+- arbitrary shell execution from chat
+- a cloud-hosted service
 
 ## What It Does
 
@@ -29,6 +58,126 @@ This project is intentionally narrow in scope:
 
 The focus is reliability and clarity for personal use on mobile.
 
+## Quick Start
+
+If you want the shortest path from zero to a working bot, follow these exact steps.
+
+### 1. Prerequisites
+
+You need:
+
+- Windows
+- Node.js 24 or newer
+- a Telegram account
+- a Telegram bot token from `@BotFather`
+- your Telegram numeric user id
+- Codex CLI installed and authenticated on the same machine
+
+Check Node:
+
+```powershell
+node --version
+```
+
+Check Codex:
+
+```powershell
+codex --help
+```
+
+If `codex` is not found, install the official CLI:
+
+```powershell
+npm install -g @openai/codex
+```
+
+Then verify it again:
+
+```powershell
+codex --help
+```
+
+### 2. Create a Telegram bot
+
+In Telegram, open `@BotFather` and create a new bot with `/newbot`. BotFather will give you a bot token.
+
+### 3. Get your Telegram numeric user id
+
+You need your numeric Telegram user id for `ALLOWED_USER_IDS`. A common way is to message a bot such as `@userinfobot` and copy the numeric id it returns.
+
+### 4. Clone the repository
+
+```powershell
+git clone <your-repo-url>
+cd telegram-codex-companion
+```
+
+### 5. Create your local config
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Edit `.env` and fill in:
+
+- `TELEGRAM_BOT_TOKEN`
+- `ALLOWED_USER_IDS`
+- `CODEX_EXECUTABLE` only if `codex` is not available on `PATH`
+
+Minimal example:
+
+```env
+TELEGRAM_BOT_TOKEN=123456:replace-me
+ALLOWED_USER_IDS=123456789
+CODEX_EXECUTABLE=codex
+```
+
+### 6. Start the bot
+
+```powershell
+npm start
+```
+
+You should see:
+
+```text
+Telegram Codex Companion is starting.
+```
+
+### 7. Verify it in Telegram
+
+Open a private chat with your bot and send:
+
+```text
+/start
+```
+
+Then add one local project:
+
+```text
+/project add demo E:\work\demo
+/project use demo
+/new
+```
+
+Then send a normal message such as:
+
+```text
+Please inspect this project and tell me how to start it.
+```
+
+If you reach this point, the repo is working.
+
+## First-Run Checklist
+
+Before debugging anything inside this repo, verify these five things:
+
+- `node --version` shows Node 24 or newer
+- `codex --help` works in the same terminal account that will run this bot
+- `.env` exists in the repo root
+- `TELEGRAM_BOT_TOKEN` is correct
+- `ALLOWED_USER_IDS` contains your numeric Telegram user id, not your username
+
 ## How It Works
 
 1. You send a command or normal message to the Telegram bot.
@@ -50,89 +199,24 @@ The focus is reliability and clarity for personal use on mobile.
 Example:
 
 - `project: blog`
-  - sessions: `homepage redesign`, `rss bug`, `deploy cleanup`
+- sessions: `homepage redesign`, `rss bug`, `deploy cleanup`
 - `project: api`
-  - sessions: `rate limit fix`, `schema migration`
+- sessions: `rate limit fix`, `schema migration`
 
 These histories stay separate.
 
-## Requirements
+## Installation Notes
 
-- Windows machine with network access
-- Node.js 24 or newer
-- Telegram account
-- a Telegram bot token from BotFather
-- your Telegram numeric user id
-- Codex CLI installed and authenticated on the same machine
+This repository currently uses Node built-ins only, so there is no separate `npm install` step before first run.
 
-## Before You Start
+In practice, setup is:
 
-### 1. Create a Telegram bot
+1. clone the repo
+2. create `.env`
+3. confirm `codex` works
+4. run `npm start`
 
-In Telegram, open `@BotFather` and create a new bot with `/newbot`. BotFather will give you a bot token.
-
-### 2. Get your Telegram numeric user id
-
-You need your numeric Telegram user id for `ALLOWED_USER_IDS`. A common way is to message a bot such as `@userinfobot` and copy the numeric id it returns.
-
-### 3. Install Codex CLI
-
-This project expects a shell-callable Codex CLI, not only the Codex desktop app bundle.
-
-If you do not already have a working `codex` command, install the official CLI globally:
-
-```powershell
-npm install -g @openai/codex
-```
-
-### 4. Authenticate Codex CLI
-
-Make sure Codex CLI works in a normal terminal before starting this bot.
-
-For example:
-
-```powershell
-codex --help
-```
-
-or, on some Windows setups, point to the npm shim directly:
-
-```powershell
-C:\Users\<YourUser>\AppData\Roaming\npm\codex.cmd --help
-```
-
-## Installation
-
-Clone the repository and enter the directory:
-
-```powershell
-git clone <your-repo-url>
-cd telegram-codex-companion
-```
-
-Create your local config file:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Edit `.env` and fill in at least these values:
-
-- `TELEGRAM_BOT_TOKEN`
-- `ALLOWED_USER_IDS`
-- `CODEX_EXECUTABLE` if `codex` is not already on `PATH`
-
-Then start the bot:
-
-```powershell
-npm start
-```
-
-When the bot is running, open a private chat with it in Telegram and send:
-
-```text
-/start
-```
+If external npm dependencies are added later, this section should be updated first.
 
 ## Configuration
 
@@ -148,9 +232,18 @@ The bot reads configuration from `.env` in the project root.
 | `CODEX_FULL_AUTO` | No | When `true`, runs Codex with `--full-auto`. Default: `true`. |
 | `CODEX_SANDBOX` | No | Passed as `--sandbox <value>`. Default: `workspace-write`. |
 | `CODEX_MODEL` | No | Optional Codex model override. If left empty, Codex CLI uses its own default model. |
+| `CODEX_REASONING_EFFORT` | No | Optional explicit reasoning override passed to Codex as `model_reasoning_effort`. Example: `low`, `medium`, `high`. If left empty, Codex CLI uses its own default reasoning setting. |
 | `DEFAULT_REPLY_CHUNK_SIZE` | No | Max characters per Telegram message chunk. Default: `3500`. |
 | `POLL_TIMEOUT_SECONDS` | No | Telegram long-poll timeout. Default: `20`. |
 | `POLL_RETRY_DELAY_MS` | No | Delay after polling errors. Default: `3000`. |
+
+### Minimum config for a first successful run
+
+If you want the smallest possible working config, only these are essential:
+
+- `TELEGRAM_BOT_TOKEN`
+- `ALLOWED_USER_IDS`
+- `CODEX_EXECUTABLE` only when `codex` is not on `PATH`
 
 ### Example `.env`
 
@@ -163,6 +256,7 @@ CODEX_EXECUTABLE=codex
 CODEX_FULL_AUTO=true
 CODEX_SANDBOX=workspace-write
 CODEX_MODEL=
+CODEX_REASONING_EFFORT=high
 DEFAULT_REPLY_CHUNK_SIZE=3500
 POLL_TIMEOUT_SECONDS=20
 POLL_RETRY_DELAY_MS=3000
@@ -181,6 +275,7 @@ CODEX_EXECUTABLE=C:\Users\<YourUser>\AppData\Roaming\npm\codex.cmd
 ## Telegram Commands
 
 - `/start` - show help
+- `/help` - show the full command reference and quick-start workflow
 - `/projects` - list saved projects and mark the current one
 - `/project add <name> <path>` - add a local project directory
 - `/project use <name>` - switch the current project
@@ -193,6 +288,12 @@ CODEX_EXECUTABLE=C:\Users\<YourUser>\AppData\Roaming\npm\codex.cmd
 - `/status` - show current project, path, session, and running state
 - `/stop` - request stop for the current Codex run
 - normal text message - continue the active session, or start a new one if `/new` was used
+
+Notes:
+
+- project names may only contain letters, numbers, dot, dash, and underscore
+- the project path must already exist on disk
+- `/project add` accepts paths with spaces as long as the project name itself has no spaces
 
 ## Typical First-Time Workflow
 
@@ -218,6 +319,12 @@ CODEX_EXECUTABLE=C:\Users\<YourUser>\AppData\Roaming\npm\codex.cmd
 
 ```text
 Please inspect this project and tell me how to start it.
+```
+
+If you want a safer first prompt for testing, use:
+
+```text
+Tell me what this repository is, how to run it, and do not change any files.
 ```
 
 ### Rename the session after you know what it became
@@ -252,6 +359,8 @@ This keeps the phone workflow much lighter than typing full commands each time.
 ### Progress updates
 
 While Codex is working, the bot edits a progress message in Telegram with staged updates such as:
+
+Note: this is stage-based progress, not token-by-token answer streaming.
 
 - starting the session
 - gathering context
@@ -299,11 +408,21 @@ npm test
 
 The tests run in a single process because some environments block worker subprocesses.
 
+Current local verification at the time of the latest README revision: `npm test` passes.
+
 ## Windows Startup
 
 See [docs/windows-startup.md](docs/windows-startup.md) for Task Scheduler setup and the included helper script.
 
 ## Troubleshooting
+
+Start here if the bot does not work on the first try:
+
+1. run `node --version`
+2. run `codex --help`
+3. check that `.env` exists
+4. confirm `TELEGRAM_BOT_TOKEN` and `ALLOWED_USER_IDS`
+5. run `npm start` again and watch the terminal output
 
 ### `Unauthorized Telegram user.`
 
@@ -328,6 +447,51 @@ codex --help
 ```
 
 If needed, set `CODEX_EXECUTABLE` explicitly to the CLI path.
+
+If `codex` works in your own PowerShell window but not from Node, the most reliable fix on Windows is usually:
+
+```env
+CODEX_EXECUTABLE=C:\Users\<YourUser>\AppData\Roaming\npm\codex.cmd
+```
+
+### `Missing required config: TELEGRAM_BOT_TOKEN` or similar
+
+Your `.env` file is missing a required key or was not created in the repository root.
+
+Fix:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Then fill in the missing values.
+
+### Telegram responds, but Codex does nothing useful
+
+Usually one of these is true:
+
+- the selected project path is wrong
+- the selected folder is not the repo you meant to inspect
+- Codex CLI is installed but not authenticated
+- the active session is not the one you think it is
+
+Check:
+
+```text
+/project current
+/status
+/sessions
+```
+
+### Thinking feels too shallow
+
+Set `CODEX_REASONING_EFFORT` explicitly in `.env`, for example:
+
+```env
+CODEX_REASONING_EFFORT=high
+```
+
+If this is empty, Codex CLI falls back to its own default or your global `~/.codex/config.toml` setting.
 
 ### Long replies feel noisy on mobile
 

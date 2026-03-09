@@ -117,7 +117,8 @@ export class TelegramCompanionService {
 
   async handleCommand({ userId, chatId, parsed }) {
     switch (parsed.command) {
-      case "start": {
+      case "start":
+      case "help": {
         const binding = this.store.getUserBinding(userId);
         await this.safeSend(chatId, buildHelpText(), {
           reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
@@ -381,7 +382,8 @@ export class TelegramCompanionService {
       messageId,
       replyMarkup,
       lastText: null,
-      lastUpdatedAt: 0
+      lastUpdatedAt: 0,
+      useSendFallback: false
     };
   }
 
@@ -423,12 +425,37 @@ export class TelegramCompanionService {
 
     progressTracker.lastText = nextText;
     progressTracker.lastUpdatedAt = now;
+    if (progressTracker.useSendFallback) {
+      void this.telegramApi
+        .sendMessage(progressTracker.chatId, nextText, {
+          reply_markup: progressTracker.replyMarkup
+        })
+        .then((message) => {
+          progressTracker.messageId = message.message_id;
+        })
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error("Failed to send Telegram progress message: " + message);
+        });
+      return;
+    }
 
     void this.telegramApi
-      .editMessageText(progressTracker.chatId, progressTracker.messageId, nextText, {
-        reply_markup: progressTracker.replyMarkup
+      .editMessageText(progressTracker.chatId, progressTracker.messageId, nextText)
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        progressTracker.useSendFallback = true;
+        console.error("Failed to edit Telegram progress message: " + message);
+        return this.telegramApi.sendMessage(progressTracker.chatId, nextText, {
+          reply_markup: progressTracker.replyMarkup
+        }).then((sentMessage) => {
+          progressTracker.messageId = sentMessage.message_id;
+        });
       })
-      .catch(() => {});
+      .catch((error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("Failed to send Telegram progress fallback message: " + message);
+      });
   }
 
   async handlePrompt({ userId, chatId, prompt }) {
@@ -558,3 +585,4 @@ export class TelegramCompanionService {
     }
   }
 }
+
