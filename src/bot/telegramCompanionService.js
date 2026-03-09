@@ -12,6 +12,7 @@ import {
 } from "./messageFormatter.js";
 import { parseIncomingText } from "./commandParser.js";
 import { summarizeText } from "../logging/debugLogger.js";
+import { buildCodexFailureReply } from "../codex_runner/runFailure.js";
 
 function isValidProjectName(name) {
   return /^[A-Za-z0-9._-]+$/u.test(name);
@@ -77,6 +78,14 @@ export class TelegramCompanionService {
         if (binding.runningSessionId) {
           this.store.updateSessionStatus(binding.runningSessionId, "running");
         }
+        this.debugLogger?.log("telegram.run_state.recovered", {
+          userId: binding.telegramUserId,
+          runningPid: binding.runningPid,
+          runningSessionId: binding.runningSessionId,
+          runningProjectName: binding.runningProjectName,
+          runningThreadId: binding.runningThreadId,
+          runningResumeMode: binding.runningResumeMode
+        });
         continue;
       }
 
@@ -84,7 +93,71 @@ export class TelegramCompanionService {
         this.store.updateSessionStatus(binding.runningSessionId, "interrupted");
       }
       this.store.clearRunState(binding.telegramUserId);
+      this.debugLogger?.log("telegram.run_state.stale_cleared", {
+        userId: binding.telegramUserId,
+        runningPid: binding.runningPid,
+        runningSessionId: binding.runningSessionId,
+        runningProjectName: binding.runningProjectName
+      });
     }
+  }
+
+  handleStaleDetachedRun(userId, binding, reason = "detached run state was stale") {
+    if (binding?.runningSessionId) {
+      this.store.updateSessionStatus(binding.runningSessionId, "interrupted");
+    }
+    this.store.clearRunState(userId);
+    this.debugLogger?.log("telegram.run_state.stale_cleared", {
+      userId,
+      runningPid: binding?.runningPid ?? null,
+      runningSessionId: binding?.runningSessionId ?? null,
+      runningProjectName: binding?.runningProjectName ?? null,
+      reason
+    });
+    return this.store.getUserBinding(userId);
+  }
+
+  refreshDetachedRunState(userId, binding = null) {
+    const currentBinding = binding ?? this.store.getUserBinding(userId);
+    if (!currentBinding?.runningPid || this.activeRuns.has(userId)) {
+      return currentBinding;
+    }
+
+    const alive = this.processUtils.isPidAlive(currentBinding.runningPid);
+    if (alive) {
+      return currentBinding;
+    }
+
+    return this.handleStaleDetachedRun(userId, currentBinding, "pid was no longer alive during command handling");
+  }
+
+  hasTrackedRun(userId, binding) {
+    return this.activeRuns.has(userId) || Boolean(binding?.runningPid);
+  }
+
+  buildRunBusyMessage(userId, binding) {
+    if (!binding?.runningPid || this.activeRuns.has(userId)) {
+      return "A Codex run is already in progress. Use /stop first if needed.";
+    }
+
+    return `A detached Codex run is still marked active (pid ${binding.runningPid}). Use /status or /stop before starting another run.`;
+  }
+
+  buildRunStateFields({ project, activeSession, isResume, runHandle }) {
+    return {
+      runningSessionId: activeSession?.id ?? null,
+      runningPid: runHandle?.pid ?? null,
+      runningStartedAt: new Date().toISOString(),
+      runningProjectName: project.name,
+      runningCwd: project.cwd,
+      runningModel: this.config.codexModel || null,
+      runningSandbox: this.config.codexSandbox || null,
+      runningResumeMode: isResume ? "resume" : "fresh",
+      runningThreadId: activeSession?.codexSessionId ?? null,
+      runningLastEventType: null,
+      runningLastEventText: null,
+      runningLastEventAt: null
+    };
   }
 
   async handleUpdate(update) {
@@ -318,12 +391,12 @@ export class TelegramCompanionService {
         return;
       }
       case "new": {
-        if (this.activeRuns.has(userId)) {
-          await this.safeSend(chatId, "A Codex run is already in progress. Use /stop first if needed.");
+        const binding = this.refreshDetachedRunState(userId, this.store.getUserBinding(userId));
+        if (this.hasTrackedRun(userId, binding)) {
+          await this.safeSend(chatId, this.buildRunBusyMessage(userId, binding));
           return;
         }
 
-        const binding = this.store.getUserBinding(userId);
         if (!binding?.currentProjectName) {
           await this.safeSend(chatId, "Select a project first with /project use <name>.");
           return;
@@ -429,7 +502,7 @@ export class TelegramCompanionService {
         return;
       }
       case "status": {
-        const binding = this.store.getUserBinding(userId);
+        const binding = this.refreshDetachedRunState(userId, this.store.getUserBinding(userId));
         const project = binding?.currentProjectName
           ? this.store.getProject(binding.currentProjectName)
           : null;
@@ -451,7 +524,7 @@ export class TelegramCompanionService {
           return;
         }
 
-        const binding = this.store.getUserBinding(userId);
+        const binding = this.refreshDetachedRunState(userId, this.store.getUserBinding(userId));
         if (!binding?.runningPid) {
           await this.safeSend(chatId, "No active Codex run.");
           return;
@@ -463,6 +536,12 @@ export class TelegramCompanionService {
             this.store.updateSessionStatus(binding.runningSessionId, "interrupted");
           }
           this.store.clearRunState(userId);
+          this.debugLogger?.log("telegram.run_state.stop_requested", {
+            userId,
+            runningPid: binding.runningPid,
+            runningSessionId: binding.runningSessionId,
+            runningProjectName: binding.runningProjectName
+          });
           await this.safeSend(chatId, `Stop requested for detached Codex process ${binding.runningPid}.`, {
             reply_markup: buildMainKeyboard(binding.currentProjectName ?? null)
           });
@@ -579,14 +658,14 @@ export class TelegramCompanionService {
   }
 
   async handlePrompt({ userId, chatId, prompt }) {
-    if (this.activeRuns.has(userId)) {
-      await this.safeSend(chatId, "A Codex run is already in progress. Wait for it to finish or use /stop.", {
-        reply_markup: buildMainKeyboard(this.store.getUserBinding(userId)?.currentProjectName ?? null)
+    let binding = this.refreshDetachedRunState(userId, this.store.getUserBinding(userId));
+    if (this.hasTrackedRun(userId, binding)) {
+      await this.safeSend(chatId, this.buildRunBusyMessage(userId, binding), {
+        reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
       });
       return;
     }
 
-    const binding = this.store.getUserBinding(userId);
     if (!binding?.currentProjectName) {
       await this.safeSend(chatId, "No current project selected. Use /project add <name> <path> or /project use <name>.", {
         reply_markup: buildMainKeyboard()
@@ -654,9 +733,17 @@ export class TelegramCompanionService {
               codexSessionId: threadId,
               title: pendingTitle
             });
-            this.store.setRunState(userId, {
+            this.store.updateRunState(userId, {
               runningSessionId: session.id,
+              runningThreadId: threadId,
               runningPid: runHandle?.pid ?? null
+            });
+            return;
+          }
+
+          if (threadId) {
+            this.store.updateRunState(userId, {
+              runningThreadId: threadId
             });
           }
         },
@@ -669,31 +756,45 @@ export class TelegramCompanionService {
               eventType: event.type,
               progressText
             });
+            this.store.updateRunState(userId, {
+              runningLastEventType: event.type,
+              runningLastEventText: progressText,
+              runningLastEventAt: new Date().toISOString(),
+              runningThreadId: event.thread_id ?? undefined
+            });
           }
           this.scheduleProgressUpdate(progressTracker, progressText);
         }
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const failure = buildCodexFailureReply(message, {
+        projectName: project.name,
+        isResume
+      });
       this.debugLogger?.log("telegram.prompt.start_failed", {
         userId,
         chatId,
         projectName: project.name,
+        failureCode: failure.classification.code,
         errorPreview: summarizeText(message)
       });
-      this.scheduleProgressUpdate(progressTracker, `Codex could not start.\n\n${message}`, true);
+      this.scheduleProgressUpdate(progressTracker, `Codex could not start in ${project.name}.`, true);
+      await this.safeSend(chatId, failure.text, {
+        reply_markup: replyMarkup
+      });
       return;
     }
 
-    const runningSessionId = activeSession?.id ?? null;
-    if (runningSessionId) {
-      this.store.updateSessionStatus(runningSessionId, "running");
-      this.store.setRunState(userId, { runningSessionId, runningPid: runHandle.pid });
-    } else if (createdSessionId) {
-      this.store.setRunState(userId, { runningSessionId: createdSessionId, runningPid: runHandle.pid });
-    } else {
-      this.store.setRunState(userId, { runningSessionId: null, runningPid: runHandle.pid });
-    }
+    this.store.setRunState(
+      userId,
+      this.buildRunStateFields({
+        project,
+        activeSession,
+        isResume,
+        runHandle
+      })
+    );
 
     this.activeRuns.set(userId, runHandle);
 
@@ -729,15 +830,20 @@ export class TelegramCompanionService {
         this.activeRuns.delete(userId);
 
         const message = error instanceof Error ? error.message : String(error);
+        const failure = buildCodexFailureReply(message, {
+          projectName: project.name,
+          isResume
+        });
         this.debugLogger?.log("telegram.prompt.failed", {
           userId,
           chatId,
           projectName: project.name,
           sessionId,
+          failureCode: failure.classification.code,
           errorPreview: summarizeText(message)
         });
         this.scheduleProgressUpdate(progressTracker, `Run failed in ${project.name}.`, true);
-        await this.safeSend(chatId, `Codex run failed.\n\n${message}`, {
+        await this.safeSend(chatId, failure.text, {
           reply_markup: replyMarkup
         });
       });
@@ -757,4 +863,3 @@ export class TelegramCompanionService {
     }
   }
 }
-

@@ -75,6 +75,8 @@ function createConfig(overrides = {}) {
   return {
     allowedUserIds: new Set([111]),
     defaultReplyChunkSize: 400,
+    codexModel: "",
+    codexSandbox: "",
     ...overrides
   };
 }
@@ -238,7 +240,11 @@ test("recovery clears dead detached runs and marks sessions interrupted", async 
     status: "running"
   });
   store.setActiveSession(111, session.id);
-  store.setRunState(111, { runningSessionId: session.id, runningPid: 4242 });
+  store.setRunState(111, {
+    runningSessionId: session.id,
+    runningPid: 4242,
+    runningProjectName: "demo"
+  });
 
   const telegramApi = new FakeTelegramApi();
   const runner = new FakeRunner();
@@ -260,6 +266,113 @@ test("recovery clears dead detached runs and marks sessions interrupted", async 
   const binding = store.getUserBinding(111);
   assert.equal(binding.runningPid, null);
   assert.equal(store.getSessionById(session.id).status, "interrupted");
+});
+
+test("status reports detached run metadata", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  store.addProject({ name: "demo", cwd: projectPath });
+  store.ensureUserBinding(111);
+  store.setCurrentProject(111, "demo", null);
+  store.setRunState(111, {
+    runningPid: 4242,
+    runningProjectName: "demo",
+    runningCwd: projectPath,
+    runningModel: "gpt-5.4",
+    runningSandbox: "workspace-write",
+    runningResumeMode: "fresh",
+    runningStartedAt: new Date(Date.now() - 60000).toISOString(),
+    runningLastEventText: "Thinking...",
+    runningLastEventAt: new Date(Date.now() - 5000).toISOString()
+  });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi,
+    processUtils: {
+      isPidAlive() {
+        return true;
+      },
+      killPid() {}
+    }
+  });
+
+  const beforeCount = telegramApi.messages.length;
+  await service.handleUpdate(createUpdate(111, 500, "/status"));
+
+  const statusText = telegramApi.messages.slice(beforeCount).map((entry) => entry.text).join("\n");
+  assert.match(statusText, /Model: gpt-5.4/);
+  assert.match(statusText, /Sandbox: workspace-write/);
+  assert.match(statusText, /^Started: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/m);
+  assert.match(statusText, /Last progress: Thinking\.\.\./);
+  assert.match(statusText, /^Last progress at: \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/m);
+});
+
+test("refuses new prompts while a detached run is still alive", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  store.addProject({ name: "demo", cwd: projectPath });
+  store.ensureUserBinding(111);
+  store.setCurrentProject(111, "demo", null);
+  store.setRunState(111, {
+    runningPid: 4242,
+    runningProjectName: "demo"
+  });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi,
+    processUtils: {
+      isPidAlive() {
+        return true;
+      },
+      killPid() {}
+    }
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, "please continue"));
+
+  assert.equal(runner.calls.length, 0);
+  assert.match(telegramApi.messages.at(-1).text, /detached Codex run is still marked active/);
+});
+
+test("classifies Codex launch failures for user-facing replies", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  runner.enqueue({
+    error: new Error("spawn codex ENOENT")
+  });
+
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  await service.handleUpdate(createUpdate(111, 500, "debug this repo"));
+  await flush();
+
+  const combined = telegramApi.messages.map((entry) => entry.text).join("\n");
+  assert.match(combined, /Codex CLI could not be launched/);
+  assert.match(combined, /CODEX_EXECUTABLE/);
 });
 
 test("refuses prompts when the current project path no longer exists", async (t) => {
@@ -370,7 +483,6 @@ test("start and projects attach a mobile-friendly reply keyboard", async (t) => 
   assert.ok(keyboard.includes("/status"));
 });
 
-
 test("help command returns the detailed help text and keyboard", async (t) => {
   const { store } = createStore(t);
   const telegramApi = new FakeTelegramApi();
@@ -424,5 +536,6 @@ test("falls back to sending progress messages when Telegram edits fail", async (
   assert.ok(telegramApi.messages.some((entry) => entry.text.includes("Session started. Gathering context")));
   assert.ok(telegramApi.messages.some((entry) => entry.options.reply_markup));
 });
+
 
 

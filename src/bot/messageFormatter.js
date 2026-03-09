@@ -1,3 +1,69 @@
+function formatDurationFromMs(durationMs) {
+  if (!Number.isFinite(durationMs) || durationMs < 1000) {
+    return "less than 1s";
+  }
+
+  const totalSeconds = Math.floor(durationMs / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts = [];
+
+  if (hours > 0) {
+    parts.push(`${hours}h`);
+  }
+  if (minutes > 0) {
+    parts.push(`${minutes}m`);
+  }
+  if (seconds > 0 || parts.length === 0) {
+    parts.push(`${seconds}s`);
+  }
+
+  return parts.join(" ");
+}
+
+function formatElapsed(isoText) {
+  if (!isoText) {
+    return null;
+  }
+
+  const startedAt = Date.parse(isoText);
+  if (!Number.isFinite(startedAt)) {
+    return null;
+  }
+
+  return formatDurationFromMs(Date.now() - startedAt);
+}
+
+function formatRunMode(mode) {
+  if (mode === "resume") {
+    return "resumed existing session";
+  }
+  if (mode === "fresh") {
+    return "fresh session";
+  }
+  return null;
+}
+
+function formatAbsoluteTime(isoText) {
+  if (!isoText) {
+    return null;
+  }
+
+  const value = new Date(isoText);
+  if (Number.isNaN(value.getTime())) {
+    return null;
+  }
+
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  const hours = String(value.getHours()).padStart(2, "0");
+  const minutes = String(value.getMinutes()).padStart(2, "0");
+  const seconds = String(value.getSeconds()).padStart(2, "0");
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
 export function chunkText(text, maxLength) {
   const normalized = (text || "").trim();
   if (!normalized) {
@@ -82,6 +148,40 @@ export function formatStatus({ project, session, binding, detachedRunning = fals
     lines.push(`Status: ${session.status}`);
   } else {
     lines.push("Session: none selected");
+  }
+
+  if (binding?.runningPid) {
+    const runMode = formatRunMode(binding.runningResumeMode);
+    const elapsed = formatElapsed(binding.runningStartedAt);
+    const startedAt = formatAbsoluteTime(binding.runningStartedAt);
+    lines.push(`Run project: ${binding.runningProjectName || project.name}`);
+    lines.push(`Run cwd: ${binding.runningCwd || project.cwd}`);
+    lines.push(`Model: ${binding.runningModel || "default"}`);
+    lines.push(`Sandbox: ${binding.runningSandbox || "default"}`);
+    if (runMode) {
+      lines.push(`Run mode: ${runMode}`);
+    }
+    if (binding.runningThreadId && binding.runningThreadId !== session?.codexSessionId) {
+      lines.push(`Running thread id: ${binding.runningThreadId}`);
+    }
+    if (startedAt) {
+      lines.push(`Started: ${startedAt}`);
+    }
+    if (elapsed) {
+      lines.push(`Elapsed: ${elapsed}`);
+    }
+    if (binding.runningLastEventText) {
+      const lastEventAge = formatElapsed(binding.runningLastEventAt);
+      const lastEventAt = formatAbsoluteTime(binding.runningLastEventAt);
+      lines.push(
+        lastEventAge
+          ? `Last progress: ${binding.runningLastEventText} (${lastEventAge} ago)`
+          : `Last progress: ${binding.runningLastEventText}`
+      );
+      if (lastEventAt) {
+        lines.push(`Last progress at: ${lastEventAt}`);
+      }
+    }
   }
 
   return lines.join("\n");

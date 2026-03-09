@@ -2,12 +2,68 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+const USER_BINDING_SELECT = `
+  telegram_user_id AS telegramUserId,
+  current_project_name AS currentProjectName,
+  active_session_id AS activeSessionId,
+  running_session_id AS runningSessionId,
+  running_pid AS runningPid,
+  running_started_at AS runningStartedAt,
+  running_project_name AS runningProjectName,
+  running_cwd AS runningCwd,
+  running_model AS runningModel,
+  running_sandbox AS runningSandbox,
+  running_resume_mode AS runningResumeMode,
+  running_thread_id AS runningThreadId,
+  running_last_event_type AS runningLastEventType,
+  running_last_event_text AS runningLastEventText,
+  running_last_event_at AS runningLastEventAt,
+  updated_at AS updatedAt
+`;
+
+const RUN_STATE_FIELD_TO_COLUMN = {
+  runningSessionId: "running_session_id",
+  runningPid: "running_pid",
+  runningStartedAt: "running_started_at",
+  runningProjectName: "running_project_name",
+  runningCwd: "running_cwd",
+  runningModel: "running_model",
+  runningSandbox: "running_sandbox",
+  runningResumeMode: "running_resume_mode",
+  runningThreadId: "running_thread_id",
+  runningLastEventType: "running_last_event_type",
+  runningLastEventText: "running_last_event_text",
+  runningLastEventAt: "running_last_event_at"
+};
+
+const RUN_STATE_DEFAULTS = {
+  runningSessionId: null,
+  runningPid: null,
+  runningStartedAt: null,
+  runningProjectName: null,
+  runningCwd: null,
+  runningModel: null,
+  runningSandbox: null,
+  runningResumeMode: null,
+  runningThreadId: null,
+  runningLastEventType: null,
+  runningLastEventText: null,
+  runningLastEventAt: null
+};
+
 function nowIso() {
   return new Date().toISOString();
 }
 
 function ensureParentDirectory(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function listColumnNames(db, tableName) {
+  return db
+    .prepare(`PRAGMA table_info(${tableName})`)
+    .all()
+    .map((row) => row.name);
 }
 
 export class CompanionStateStore {
@@ -23,6 +79,7 @@ export class CompanionStateStore {
 
     this.createProjectsSchema();
     this.createStateSchema();
+    this.migrateStateSchema();
   }
 
   close() {
@@ -62,6 +119,16 @@ export class CompanionStateStore {
         active_session_id INTEGER,
         running_session_id INTEGER,
         running_pid INTEGER,
+        running_started_at TEXT,
+        running_project_name TEXT,
+        running_cwd TEXT,
+        running_model TEXT,
+        running_sandbox TEXT,
+        running_resume_mode TEXT,
+        running_thread_id TEXT,
+        running_last_event_type TEXT,
+        running_last_event_text TEXT,
+        running_last_event_at TEXT,
         updated_at TEXT NOT NULL
       );
 
@@ -71,6 +138,28 @@ export class CompanionStateStore {
         updated_at TEXT NOT NULL
       );
     `);
+  }
+
+  migrateStateSchema() {
+    const userBindingColumns = listColumnNames(this.stateDb, "user_bindings");
+    const requiredColumns = {
+      running_started_at: "TEXT",
+      running_project_name: "TEXT",
+      running_cwd: "TEXT",
+      running_model: "TEXT",
+      running_sandbox: "TEXT",
+      running_resume_mode: "TEXT",
+      running_thread_id: "TEXT",
+      running_last_event_type: "TEXT",
+      running_last_event_text: "TEXT",
+      running_last_event_at: "TEXT"
+    };
+
+    for (const [columnName, columnType] of Object.entries(requiredColumns)) {
+      if (!userBindingColumns.includes(columnName)) {
+        this.stateDb.exec(`ALTER TABLE user_bindings ADD COLUMN ${columnName} ${columnType};`);
+      }
+    }
   }
 
   listProjects() {
@@ -157,12 +246,7 @@ export class CompanionStateStore {
       this.stateDb
         .prepare(`
           SELECT
-            telegram_user_id AS telegramUserId,
-            current_project_name AS currentProjectName,
-            active_session_id AS activeSessionId,
-            running_session_id AS runningSessionId,
-            running_pid AS runningPid,
-            updated_at AS updatedAt
+            ${USER_BINDING_SELECT}
           FROM user_bindings
           WHERE telegram_user_id = ?
         `)
@@ -174,12 +258,7 @@ export class CompanionStateStore {
     return this.stateDb
       .prepare(`
         SELECT
-          telegram_user_id AS telegramUserId,
-          current_project_name AS currentProjectName,
-          active_session_id AS activeSessionId,
-          running_session_id AS runningSessionId,
-          running_pid AS runningPid,
-          updated_at AS updatedAt
+          ${USER_BINDING_SELECT}
         FROM user_bindings
         WHERE running_pid IS NOT NULL
       `)
@@ -332,22 +411,54 @@ export class CompanionStateStore {
     return this.getUserBinding(telegramUserId);
   }
 
-  setRunState(telegramUserId, { runningSessionId = null, runningPid = null }) {
+  setRunState(telegramUserId, fields = {}) {
+    return this.updateRunState(telegramUserId, {
+      ...RUN_STATE_DEFAULTS,
+      ...fields
+    });
+  }
+
+  updateRunState(telegramUserId, fields) {
     this.ensureUserBinding(telegramUserId);
+    const entries = Object.entries(fields).filter(([, value]) => value !== undefined);
+    if (entries.length === 0) {
+      return this.getUserBinding(telegramUserId);
+    }
+
     const timestamp = nowIso();
+    const assignments = [];
+    const values = [];
+
+    for (const [fieldName, value] of entries) {
+      const columnName = RUN_STATE_FIELD_TO_COLUMN[fieldName];
+      if (!columnName) {
+        continue;
+      }
+
+      assignments.push(`${columnName} = ?`);
+      values.push(value);
+    }
+
+    if (assignments.length === 0) {
+      return this.getUserBinding(telegramUserId);
+    }
+
+    assignments.push("updated_at = ?");
+    values.push(timestamp, telegramUserId);
+
     this.stateDb
       .prepare(`
         UPDATE user_bindings
-        SET running_session_id = ?, running_pid = ?, updated_at = ?
+        SET ${assignments.join(", ")}
         WHERE telegram_user_id = ?
       `)
-      .run(runningSessionId, runningPid, timestamp, telegramUserId);
+      .run(...values);
 
     return this.getUserBinding(telegramUserId);
   }
 
   clearRunState(telegramUserId) {
-    return this.setRunState(telegramUserId, { runningSessionId: null, runningPid: null });
+    return this.updateRunState(telegramUserId, RUN_STATE_DEFAULTS);
   }
 
   getUpdateOffset() {

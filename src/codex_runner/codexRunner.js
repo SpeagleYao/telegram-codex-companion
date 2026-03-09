@@ -184,6 +184,7 @@ export class CodexRunner {
     this.debugLogger?.log("codex.run.started", {
       cwd,
       resumeSessionId,
+      pid: child.pid ?? null,
       promptLength: prompt.length,
       promptPreview: summarizeText(prompt),
       launchMode: spawnResult.launchMode,
@@ -226,7 +227,7 @@ export class CodexRunner {
 
       if (parsed?.type === "thread.started" && parsed.thread_id) {
         threadId = parsed.thread_id;
-        this.debugLogger?.log("codex.thread.started", { threadId });
+        this.debugLogger?.log("codex.thread.started", { threadId, pid: child.pid ?? null });
         notifyThreadId(threadId);
         return;
       }
@@ -254,6 +255,7 @@ export class CodexRunner {
     const promise = new Promise((resolve, reject) => {
       child.on("error", (error) => {
         this.debugLogger?.log("codex.run.error", {
+          pid: child.pid ?? null,
           message: error instanceof Error ? error.message : String(error)
         });
         reject(error);
@@ -262,13 +264,18 @@ export class CodexRunner {
       child.on("exit", (code, signal) => {
         stdoutReader.close();
         const output = agentMessages.filter(Boolean).join("\n\n").trim();
+        const stderrSummary = summarizeText(stderrText.trim(), 100);
+        const stdoutTail = summarizeText(stdoutText.trim().split(/\r?\n/u).slice(-10).join("\n"), 100);
 
         if (code === 0) {
           this.debugLogger?.log("codex.run.completed", {
+            pid: child.pid ?? null,
             threadId,
+            exitCode: code,
             outputLength: output.length,
             outputPreview: summarizeText(output),
-            stderrLength: stderrText.trim().length
+            stderrLength: stderrText.trim().length,
+            stderrPreview: stderrSummary || null
           });
           resolve({
             threadId,
@@ -295,11 +302,14 @@ export class CodexRunner {
 
         const reason = reasonParts.filter(Boolean).join("\n\n") || `Codex exited with code ${code}`;
         this.debugLogger?.log("codex.run.failed", {
+          pid: child.pid ?? null,
           threadId,
           exitCode: code,
           signal,
           reasonPreview: summarizeText(reason),
-          stderrLength: stderrText.trim().length
+          stderrLength: stderrText.trim().length,
+          stderrPreview: stderrSummary || null,
+          stdoutTail: stdoutTail || null
         });
         const error = new Error(reason);
         error.threadId = threadId;

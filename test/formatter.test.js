@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildHelpText, chunkText } from "../src/bot/messageFormatter.js";
+import { buildHelpText, chunkText, formatStatus } from "../src/bot/messageFormatter.js";
 import { parseIncomingText } from "../src/bot/commandParser.js";
 
 test("chunkText splits long replies on boundaries", () => {
@@ -40,6 +40,40 @@ test("parseIncomingText understands project commands, rename commands, and promp
     index: 2,
     title: "bugfix session"
   });
+  assert.deepEqual(parseIncomingText("/status@demo_bot"), {
+    type: "command",
+    command: "status",
+    args: ""
+  });
+});
+
+test("formatStatus includes detailed run metadata when a run is active", () => {
+  const startedAt = new Date("2026-03-09T14:23:10");
+  const lastEventAt = new Date("2026-03-09T14:28:57");
+  const statusText = formatStatus({
+    project: { name: "demo", cwd: "E:/work/demo" },
+    session: { title: "Bug hunt", codexSessionId: "thread-1", status: "running" },
+    binding: {
+      runningPid: 1234,
+      runningProjectName: "demo",
+      runningCwd: "E:/work/demo",
+      runningModel: "gpt-5.4",
+      runningSandbox: "workspace-write",
+      runningResumeMode: "resume",
+      runningStartedAt: startedAt.toISOString(),
+      runningLastEventText: "Thinking...",
+      runningLastEventAt: lastEventAt.toISOString()
+    },
+    detachedRunning: true
+  });
+
+  assert.match(statusText, /Running: yes \(tracked from a previous bot instance, pid 1234\)/);
+  assert.match(statusText, /Model: gpt-5.4/);
+  assert.match(statusText, /Sandbox: workspace-write/);
+  assert.match(statusText, /Run mode: resumed existing session/);
+  assert.match(statusText, /^Started: 2026-03-09 14:23:10$/m);
+  assert.match(statusText, /Last progress: Thinking.../);
+  assert.match(statusText, /^Last progress at: 2026-03-09 14:28:57$/m);
 });
 
 test("help text documents the core commands and workflow", () => {
