@@ -530,7 +530,7 @@ export class TelegramCompanionService {
         }
 
         const sessions = this.store.listSessionsForProject(binding.currentProjectName);
-        await this.safeSend(chatId, formatSessions(sessions, binding.activeSessionId), {
+        await this.safeSend(chatId, formatSessions(sessions, binding.activeSessionId, binding.runningSessionId), {
           reply_markup:
             sessions.length > 0
               ? buildSessionsKeyboard(sessions)
@@ -915,6 +915,9 @@ export class TelegramCompanionService {
         runHandle
       })
     );
+    if (activeSession?.id) {
+      this.store.updateSessionStatus(activeSession.id, "running");
+    }
 
     this.activeRuns.set(userId, runHandle);
 

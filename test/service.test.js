@@ -58,7 +58,7 @@ class FakeRunner {
           next.onStop();
         }
       },
-      promise: Promise.resolve().then(() => {
+      promise: (next.promise ?? Promise.resolve()).then(() => {
         if (next.error) {
           throw next.error;
         }
@@ -96,6 +96,16 @@ function createUpdate(userId, chatId, text, type = "private") {
 async function flush() {
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 function createStore(t) {
@@ -199,6 +209,44 @@ test("creates a new session, streams progress, and resumes it on the next prompt
   assert.equal(store.getSessionById(firstSession.id).status, "idle");
   assert.ok(telegramApi.messages.some((entry) => entry.text.includes("First answer")));
   assert.ok(telegramApi.messages.some((entry) => entry.text.includes("Second answer")));
+});
+
+test("sessions shows running for an active resumed session", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const deferred = createDeferred();
+  runner.enqueue({ threadId: "thread-1", output: "First answer", pid: 1111 });
+  runner.enqueue({ threadId: "thread-1", output: "Second answer", pid: 2222, promise: deferred.promise });
+
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  await service.handleUpdate(createUpdate(111, 500, "/new"));
+  await service.handleUpdate(createUpdate(111, 500, "fix the bug in this repo"));
+  await flush();
+
+  const firstSession = store.listSessionsForProject("demo")[0];
+  assert.equal(store.getSessionById(firstSession.id).status, "idle");
+
+  await service.handleUpdate(createUpdate(111, 500, "now add tests"));
+  await flush();
+
+  assert.equal(store.getSessionById(firstSession.id).status, "running");
+
+  await service.handleUpdate(createUpdate(111, 500, "/sessions"));
+  assert.match(telegramApi.messages.at(-1).text, /\* 1\. fix the bug in this repo \[running\]/);
+
+  deferred.resolve();
+  await flush();
 });
 
 test("renames the active session", async (t) => {

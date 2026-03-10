@@ -111,7 +111,7 @@ export function formatProjects(projects, currentProjectName) {
   ].join("\n");
 }
 
-export function formatSessions(sessions, activeSessionId) {
+export function formatSessions(sessions, activeSessionId, runningSessionId = null) {
   if (sessions.length === 0) {
     return "No sessions yet for this project. Use /new and then send a prompt.";
   }
@@ -120,7 +120,8 @@ export function formatSessions(sessions, activeSessionId) {
     "Sessions:",
     ...sessions.map((session, index) => {
       const marker = session.id === activeSessionId ? "*" : "-";
-      return `${marker} ${index + 1}. ${session.title} [${session.status}]`;
+      const status = session.id === runningSessionId ? "running" : session.status;
+      return `${marker} ${index + 1}. ${session.title} [${status}]`;
     })
   ].join("\n");
 }

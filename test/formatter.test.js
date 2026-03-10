@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildHelpText, chunkText, formatStatus } from "../src/bot/messageFormatter.js";
+import { buildHelpText, chunkText, formatSessions, formatStatus } from "../src/bot/messageFormatter.js";
 import { parseIncomingText } from "../src/bot/commandParser.js";
 
 test("chunkText splits long replies on boundaries", () => {
@@ -92,6 +92,20 @@ test("formatStatus includes detailed run metadata when a run is active", () => {
   assert.match(statusText, /^Started: 2026-03-09 14:23:10$/m);
   assert.match(statusText, /Last progress: Thinking.../);
   assert.match(statusText, /^Last progress at: 2026-03-09 14:28:57$/m);
+});
+
+test("formatSessions prefers the tracked running session state", () => {
+  const text = formatSessions(
+    [
+      { id: 1, title: "Current work", status: "idle" },
+      { id: 2, title: "Older work", status: "error" }
+    ],
+    1,
+    1
+  );
+
+  assert.match(text, /\* 1\. Current work \[running\]/);
+  assert.match(text, /- 2\. Older work \[error\]/);
 });
 
 test("help text documents the core commands and workflow", () => {
