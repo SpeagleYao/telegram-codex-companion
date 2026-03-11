@@ -1,4 +1,4 @@
-function delay(ms) {
+﻿function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
@@ -29,6 +29,8 @@ export class TelegramLongPoller {
           offset
         });
 
+        let shouldRetry = false;
+
         for (const update of updates) {
           if (this.stopped) {
             break;
@@ -36,17 +38,36 @@ export class TelegramLongPoller {
 
           try {
             await this.service.handleUpdate(update);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            this.debugLogger?.log("telegram.update.failed", {
-              updateId: update.update_id,
-              message
-            });
-            console.error(message);
-          } finally {
             offset = update.update_id + 1;
             this.store.setUpdateOffset(offset);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (error?.handledUpdate) {
+              this.debugLogger?.log("telegram.update.completed_with_error", {
+                updateId: update.update_id,
+                message,
+                offset,
+                commitReason: error.commitReason ?? null
+              });
+              console.error(message);
+              offset = update.update_id + 1;
+              this.store.setUpdateOffset(offset);
+              continue;
+            }
+
+            this.debugLogger?.log("telegram.update.failed", {
+              updateId: update.update_id,
+              message,
+              offset
+            });
+            console.error(message);
+            shouldRetry = true;
+            break;
           }
+        }
+
+        if (shouldRetry && !this.stopped) {
+          await delay(this.config.pollRetryDelayMs);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

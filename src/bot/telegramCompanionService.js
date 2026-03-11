@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -12,7 +13,7 @@ import {
   PROJECTS_PAGE_SIZE
 } from "./messageFormatter.js";
 import { parseIncomingText } from "./commandParser.js";
-import { summarizeText } from "../logging/debugLogger.js";
+import { describeTextForDebug, summarizeText } from "../logging/debugLogger.js";
 import { buildCodexFailureReply } from "../codex_runner/runFailure.js";
 
 function isValidProjectName(name) {
@@ -41,6 +42,7 @@ function formatItemType(itemType) {
 
 const LONG_PROMPT_MERGE_MIN_LENGTH = 3500;
 const LONG_PROMPT_MERGE_WINDOW_MS = 1500;
+const PROJECT_DELETE_CONFIRM_WINDOW_MS = 5 * 60 * 1000;
 
 function defaultProcessUtils() {
   return {
@@ -68,6 +70,45 @@ export class TelegramCompanionService {
     this.debugLogger = debugLogger;
     this.activeRuns = new Map();
     this.pendingPromptBatches = new Map();
+    this.pendingProjectDeletions = new Map();
+    this.commitContextStorage = new AsyncLocalStorage();
+  }
+
+
+  markUpdateCommitted(reason) {
+    const context = this.commitContextStorage.getStore();
+    if (!context || context.committed) {
+      return;
+    }
+
+    context.committed = true;
+    context.commitReason = reason;
+  }
+
+  annotateCommittedUpdateError(error) {
+    const committedError = error instanceof Error ? error : new Error(String(error));
+    const context = this.commitContextStorage.getStore();
+    committedError.handledUpdate = true;
+    committedError.commitReason = context?.commitReason ?? null;
+    return committedError;
+  }
+  async runWithCommitContext(context, callback) {
+    const scopedContext = {
+      committed: false,
+      commitReason: null,
+      ...context
+    };
+
+    return this.commitContextStorage.run(scopedContext, async () => {
+      try {
+        return await callback();
+      } catch (error) {
+        if (scopedContext.committed) {
+          throw this.annotateCommittedUpdateError(error);
+        }
+        throw error;
+      }
+    });
   }
 
   async recoverRunningState() {
@@ -235,64 +276,70 @@ export class TelegramCompanionService {
   }
 
   async handleUpdate(update) {
-    const message = update?.message;
-    if (!message?.text || !message.from || !message.chat) {
-      return;
-    }
+    return this.runWithCommitContext({ updateId: update?.update_id ?? null }, async () => {
+      const message = update?.message;
+      if (!message?.text || !message.from || !message.chat) {
+        return;
+      }
 
-    const userId = message.from.id;
-    const chatId = message.chat.id;
+      const userId = message.from.id;
+      const chatId = message.chat.id;
+      const isAuthorized = this.config.allowedUserIds.has(userId);
+      const isPrivateChat = message.chat.type === "private";
 
-    this.debugLogger?.log("telegram.message.received", {
-      updateId: update.update_id ?? null,
-      messageId: message.message_id ?? null,
-      userId,
-      chatId,
-      textLength: message.text.length,
-      textPreview: summarizeText(message.text)
+      this.debugLogger?.log("telegram.message.received", {
+        updateId: update.update_id ?? null,
+        messageId: message.message_id ?? null,
+        userId,
+        chatId,
+        chatType: message.chat.type ?? null,
+        isAuthorized,
+        isPrivateChat,
+        textLength: message.text.length,
+        isCommand: message.text.trim().startsWith("/")
+      });
+
+      if (!isAuthorized) {
+        await this.safeSend(chatId, "Unauthorized Telegram user.");
+        return;
+      }
+
+      if (!isPrivateChat) {
+        await this.safeSend(chatId, "This bot only accepts private chats.");
+        return;
+      }
+
+      this.store.ensureUserBinding(userId);
+
+      const parsed = parseIncomingText(message.text);
+      this.debugLogger?.log("telegram.message.parsed", {
+        userId,
+        chatId,
+        parsedType: parsed.type,
+        command: parsed.command ?? null,
+        ...(parsed.type === "prompt" ? describeTextForDebug(parsed.prompt, "prompt") : {})
+      });
+
+      if (parsed.type === "empty") {
+        return;
+      }
+
+      if (parsed.type === "prompt") {
+        await this.enqueuePrompt({ userId, chatId, prompt: parsed.prompt });
+        return;
+      }
+
+      await this.flushPendingPrompt(userId);
+      await this.handleCommand({ userId, chatId, parsed });
     });
-
-    if (!this.config.allowedUserIds.has(userId)) {
-      await this.safeSend(chatId, "Unauthorized Telegram user.");
-      return;
-    }
-
-    if (message.chat.type !== "private") {
-      await this.safeSend(chatId, "This bot only accepts private chats.");
-      return;
-    }
-
-    this.store.ensureUserBinding(userId);
-
-    const parsed = parseIncomingText(message.text);
-    this.debugLogger?.log("telegram.message.parsed", {
-      userId,
-      chatId,
-      parsedType: parsed.type,
-      command: parsed.command ?? null,
-      promptLength: parsed.prompt?.length ?? null
-    });
-
-    if (parsed.type === "empty") {
-      return;
-    }
-
-    if (parsed.type === "prompt") {
-      await this.enqueuePrompt({ userId, chatId, prompt: parsed.prompt });
-      return;
-    }
-
-    await this.flushPendingPrompt(userId);
-    await this.handleCommand({ userId, chatId, parsed });
   }
-
   shouldDelayPrompt(prompt) {
     return prompt.length >= LONG_PROMPT_MERGE_MIN_LENGTH;
   }
 
-  schedulePromptBatchFlush(userId) {
+  schedulePromptBatchFlush(userId, delayMs = LONG_PROMPT_MERGE_WINDOW_MS) {
     return setTimeout(() => {
-      void this.flushPendingPrompt(userId).catch((error) => {
+      void this.flushPendingPrompt(userId, { deferred: true }).catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.debugLogger?.log("telegram.prompt.batch_flush_failed", {
           userId,
@@ -300,7 +347,7 @@ export class TelegramCompanionService {
         });
         console.error("Failed to flush pending Telegram prompt: " + message);
       });
-    }, LONG_PROMPT_MERGE_WINDOW_MS);
+    }, delayMs);
   }
 
   async enqueuePrompt({ userId, chatId, prompt }) {
@@ -308,16 +355,19 @@ export class TelegramCompanionService {
     this.debugLogger?.log("telegram.prompt.enqueue", {
       userId,
       chatId,
-      promptLength: prompt.length,
-      promptPreview: summarizeText(prompt),
+      ...describeTextForDebug(prompt, "prompt"),
       delayed: this.shouldDelayPrompt(prompt),
       hasExistingBatch: Boolean(existingBatch)
     });
 
     if (existingBatch) {
       existingBatch.parts.push(prompt);
-      clearTimeout(existingBatch.timer);
-      existingBatch.timer = this.schedulePromptBatchFlush(userId);
+      if (existingBatch.timer) {
+        clearTimeout(existingBatch.timer);
+      }
+      if (!existingBatch.flushing) {
+        existingBatch.timer = this.schedulePromptBatchFlush(userId);
+      }
       this.debugLogger?.log("telegram.prompt.batch_extended", {
         userId,
         chatId,
@@ -335,7 +385,9 @@ export class TelegramCompanionService {
     const batch = {
       chatId,
       parts: [prompt],
-      timer: this.schedulePromptBatchFlush(userId)
+      timer: this.schedulePromptBatchFlush(userId),
+      flushing: false,
+      retryCount: 0
     };
     this.pendingPromptBatches.set(userId, batch);
     this.debugLogger?.log("telegram.prompt.batch_started", {
@@ -346,27 +398,69 @@ export class TelegramCompanionService {
     });
   }
 
-  async flushPendingPrompt(userId) {
+  async flushPendingPrompt(userId, { deferred = false } = {}) {
     const batch = this.pendingPromptBatches.get(userId);
-    if (!batch) {
+    if (!batch || batch.flushing) {
       return;
     }
 
-    this.pendingPromptBatches.delete(userId);
-    clearTimeout(batch.timer);
+    batch.flushing = true;
+    if (batch.timer) {
+      clearTimeout(batch.timer);
+      batch.timer = null;
+    }
+
     const mergedPrompt = batch.parts.join("");
     this.debugLogger?.log("telegram.prompt.batch_flushed", {
       userId,
       chatId: batch.chatId,
       batchedParts: batch.parts.length,
-      mergedLength: mergedPrompt.length,
-      promptPreview: summarizeText(mergedPrompt)
+      retryCount: batch.retryCount,
+      ...describeTextForDebug(mergedPrompt, "prompt")
     });
-    await this.handlePrompt({
-      userId,
-      chatId: batch.chatId,
-      prompt: mergedPrompt
-    });
+
+    const runFlush = async () => {
+      await this.handlePrompt({
+        userId,
+        chatId: batch.chatId,
+        prompt: mergedPrompt
+      });
+    };
+
+    try {
+      if (deferred) {
+        await this.runWithCommitContext({ deferredPromptUserId: userId }, runFlush);
+      } else {
+        await runFlush();
+      }
+      this.pendingPromptBatches.delete(userId);
+    } catch (error) {
+      batch.flushing = false;
+      if (error?.handledUpdate) {
+        this.pendingPromptBatches.delete(userId);
+        this.debugLogger?.log("telegram.prompt.batch_completed_with_error", {
+          userId,
+          chatId: batch.chatId,
+          commitReason: error.commitReason ?? null,
+          errorPreview: summarizeText(error.message || String(error))
+        });
+        console.error("Deferred Telegram prompt completed with a post-commit error: " + (error.message || String(error)));
+        return;
+      }
+
+      if (deferred) {
+        batch.retryCount += 1;
+        batch.timer = this.schedulePromptBatchFlush(userId, this.config.pollRetryDelayMs);
+        this.debugLogger?.log("telegram.prompt.batch_retry_scheduled", {
+          userId,
+          chatId: batch.chatId,
+          retryCount: batch.retryCount,
+          errorPreview: summarizeText(error.message || String(error))
+        });
+      }
+
+      throw error;
+    }
   }
 
   async handleCommand({ userId, chatId, parsed }) {
@@ -434,6 +528,8 @@ export class TelegramCompanionService {
           this.store.setCurrentProject(userId, project.name, null);
         }
 
+        this.markUpdateCommitted("project_added");
+
         const savedText = resolvedPath.usedDefaultRoot
           ? `Saved project ${project.name} -> ${project.cwd} (default root)`
           : `Saved project ${project.name} -> ${project.cwd}`;
@@ -456,6 +552,48 @@ export class TelegramCompanionService {
           return;
         }
 
+        const existingProject = this.store.getProject(parsed.name);
+        if (!existingProject) {
+          this.pendingProjectDeletions.delete(userId);
+          await this.safeSend(chatId, `Unknown project: ${parsed.name}`, {
+            reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
+          });
+          return;
+        }
+
+        const pendingDeletion = this.pendingProjectDeletions.get(userId);
+        const confirmationStillValid = pendingDeletion &&
+          pendingDeletion.name === parsed.name &&
+          Date.now() - pendingDeletion.requestedAt <= PROJECT_DELETE_CONFIRM_WINDOW_MS;
+
+        if (!parsed.confirm) {
+          this.pendingProjectDeletions.set(userId, {
+            name: parsed.name,
+            requestedAt: Date.now()
+          });
+          await this.safeSend(
+            chatId,
+            `Project ${parsed.name} is staged for deletion only. This removes saved bot sessions but does not delete ${existingProject.cwd}. To confirm within 5 minutes, send /project delete ${parsed.name} confirm.`,
+            {
+              reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
+            }
+          );
+          return;
+        }
+
+        if (!confirmationStillValid) {
+          this.pendingProjectDeletions.delete(userId);
+          await this.safeSend(
+            chatId,
+            `Deletion confirmation expired or was not requested. Send /project delete ${parsed.name} first, then /project delete ${parsed.name} confirm.`,
+            {
+              reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
+            }
+          );
+          return;
+        }
+
+        this.pendingProjectDeletions.delete(userId);
         const deletedProject = this.store.deleteProject(parsed.name);
         if (!deletedProject) {
           await this.safeSend(chatId, `Unknown project: ${parsed.name}`, {
@@ -464,6 +602,7 @@ export class TelegramCompanionService {
           return;
         }
 
+        this.markUpdateCommitted("project_deleted");
         const nextBinding = this.store.getUserBinding(userId);
         const clearedCurrentProject = binding?.currentProjectName === parsed.name;
         const sessionText = deletedProject.deletedSessionCount === 1
@@ -511,8 +650,9 @@ export class TelegramCompanionService {
         }
 
         this.store.setCurrentProject(userId, project.name, project.activeSessionId ?? null);
+        this.markUpdateCommitted(autoCreated ? "project_auto_created" : "project_selected");
         const text = autoCreated
-          ? `Current project: ${project.name}. Created ${project.cwd}. Use /new and then send a prompt.`
+          ? `Current project: ${project.name}. Created local directory ${project.cwd}. Use /new and then send a prompt.`
           : project.activeSessionId
             ? `Current project: ${project.name}. Restored the latest session.`
             : `Current project: ${project.name}. Use /new and then send a prompt.`;
@@ -557,9 +697,11 @@ export class TelegramCompanionService {
       case "project_default_set": {
         const binding = this.store.getUserBinding(userId);
         const targetPath = path.resolve(parsed.path);
+        let created = false;
 
         try {
-          this.ensureDirectoryExists(targetPath, true);
+          const ensureResult = this.ensureDirectoryExists(targetPath, true);
+          created = ensureResult.created;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           await this.safeSend(chatId, message, {
@@ -569,16 +711,23 @@ export class TelegramCompanionService {
         }
 
         this.store.setDefaultProjectRoot(userId, targetPath);
-        await this.safeSend(chatId, `Default project root set to: ${targetPath}`, {
-          reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
-        });
+        this.markUpdateCommitted(created ? "default_project_root_created" : "default_project_root_updated");
+        await this.safeSend(
+          chatId,
+          created
+            ? `Default project root set to: ${targetPath}. Created that local directory.`
+            : `Default project root set to: ${targetPath}`,
+          {
+            reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
+          }
+        );
         return;
       }
       case "project_help": {
         const binding = this.store.getUserBinding(userId);
         await this.safeSend(
           chatId,
-          "Use /project add <name> [path], /project use <name>, /project delete <name>, /project current, or /project default <path>.",
+          "Use /project add <name> [path], /project use <name>, /project delete <name> (then /project delete <name> confirm), /project current, or /project default <path>.",
           {
             reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
           }
@@ -598,6 +747,7 @@ export class TelegramCompanionService {
         }
 
         this.store.clearActiveSession(userId);
+        this.markUpdateCommitted("active_session_cleared");
         await this.safeSend(chatId, "New session armed. Send the next message to start it.", {
           reply_markup: buildMainKeyboard(binding.currentProjectName)
         });
@@ -639,6 +789,7 @@ export class TelegramCompanionService {
         }
 
         this.store.setActiveSession(userId, target.id);
+        this.markUpdateCommitted("active_session_selected");
         await this.safeSend(chatId, `Active session: ${target.title}`, {
           reply_markup: buildMainKeyboard(binding.currentProjectName)
         });
@@ -658,6 +809,7 @@ export class TelegramCompanionService {
         }
 
         const session = this.store.renameSession(binding.activeSessionId, title);
+        this.markUpdateCommitted("session_renamed");
         await this.safeSend(chatId, `Renamed current session to: ${session.title}`, {
           reply_markup: buildMainKeyboard(binding.currentProjectName ?? null)
         });
@@ -684,6 +836,7 @@ export class TelegramCompanionService {
         }
 
         const session = this.store.renameSession(target.id, title);
+        this.markUpdateCommitted("session_renamed");
         await this.safeSend(chatId, `Renamed session ${parsed.index} to: ${session.title}`, {
           reply_markup: buildMainKeyboard(binding.currentProjectName)
         });
@@ -718,6 +871,7 @@ export class TelegramCompanionService {
         const activeRun = this.activeRuns.get(userId);
         if (activeRun) {
           activeRun.stop();
+          this.markUpdateCommitted("stop_requested");
           const binding = this.store.getUserBinding(userId);
           await this.safeSend(chatId, "Stop requested for the current Codex run.", {
             reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
@@ -737,6 +891,7 @@ export class TelegramCompanionService {
             this.store.updateSessionStatus(binding.runningSessionId, "interrupted");
           }
           this.store.clearRunState(userId);
+          this.markUpdateCommitted("detached_stop_requested");
           this.debugLogger?.log("telegram.run_state.stop_requested", {
             userId,
             runningPid: binding.runningPid,
@@ -896,14 +1051,14 @@ export class TelegramCompanionService {
       projectName: project.name,
       activeSessionId: activeSession?.id ?? null,
       resumeSessionId: activeSession?.codexSessionId ?? null,
-      promptLength: prompt.length,
-      promptPreview: summarizeText(prompt)
+      ...describeTextForDebug(prompt, "prompt")
     });
 
     const isResume = Boolean(activeSession);
     const pendingTitle = buildSessionTitle(prompt);
     let createdSessionId = null;
     let runHandle = null;
+    let runSetupAborted = false;
     const replyMarkup = buildMainKeyboard(project.name);
 
     const progressMessage = await this.telegramApi.sendMessage(
@@ -918,6 +1073,10 @@ export class TelegramCompanionService {
         prompt,
         resumeSessionId: activeSession?.codexSessionId ?? null,
         onThreadId: (threadId) => {
+          if (runSetupAborted) {
+            return;
+          }
+
           if (!isResume && !createdSessionId && threadId) {
             const session = this.store.createSession({
               codexSessionId: threadId,
@@ -932,7 +1091,7 @@ export class TelegramCompanionService {
               chatId,
               sessionId: session.id,
               codexSessionId: threadId,
-              title: pendingTitle
+              sessionTitleLength: pendingTitle.length
             });
             this.store.updateRunState(userId, {
               runningSessionId: session.id,
@@ -949,6 +1108,10 @@ export class TelegramCompanionService {
           }
         },
         onEvent: (event) => {
+          if (runSetupAborted) {
+            return;
+          }
+
           const progressText = this.describeProgressEvent(event);
           if (progressText) {
             this.debugLogger?.log("telegram.progress.event", {
@@ -987,20 +1150,43 @@ export class TelegramCompanionService {
       return;
     }
 
-    this.store.setRunState(
-      userId,
-      this.buildRunStateFields({
-        project,
-        activeSession,
-        isResume,
-        runHandle
-      })
-    );
-    if (activeSession?.id) {
-      this.store.updateSessionStatus(activeSession.id, "running");
+    try {
+      this.store.setRunState(
+        userId,
+        this.buildRunStateFields({
+          project,
+          activeSession,
+          isResume,
+          runHandle
+        })
+      );
+      if (activeSession?.id) {
+        this.store.updateSessionStatus(activeSession.id, "running");
+      }
+    } catch (error) {
+      runSetupAborted = true;
+      runHandle.stop();
+      try {
+        this.store.clearRunState(userId);
+      } catch {
+      }
+      if (createdSessionId) {
+        try {
+          this.store.updateSessionStatus(createdSessionId, "interrupted");
+        } catch {
+        }
+      }
+      this.debugLogger?.log("telegram.prompt.state_persist_failed", {
+        userId,
+        chatId,
+        projectName: project.name,
+        errorPreview: summarizeText(error instanceof Error ? error.message : String(error))
+      });
+      throw error;
     }
 
     this.activeRuns.set(userId, runHandle);
+    this.markUpdateCommitted("codex_run_started");
 
     runHandle.promise
       .then(async (result) => {
@@ -1017,8 +1203,7 @@ export class TelegramCompanionService {
           chatId,
           projectName: project.name,
           sessionId: finalSessionId,
-          outputLength: result.output.length,
-          outputPreview: summarizeText(result.output)
+          ...describeTextForDebug(result.output, "output")
         });
         this.scheduleProgressUpdate(progressTracker, `Completed in ${project.name}.`, true);
         await this.safeSend(chatId, result.output, {
@@ -1060,11 +1245,10 @@ export class TelegramCompanionService {
       totalLength: text.length,
       chunkCount: chunks.length,
       firstChunkLength: chunks[0]?.length ?? 0,
-      textPreview: summarizeText(text)
+      ...describeTextForDebug(text)
     });
     for (const [index, chunk] of chunks.entries()) {
       await this.telegramApi.sendMessage(chatId, chunk, index === 0 ? options : {});
     }
   }
 }
-

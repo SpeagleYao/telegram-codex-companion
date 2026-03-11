@@ -1,4 +1,4 @@
-import test from "node:test";
+﻿import test from "node:test";
 import assert from "node:assert/strict";
 
 import { buildHelpText, chunkText, formatSessions, formatStatus } from "../src/bot/messageFormatter.js";
@@ -29,6 +29,18 @@ test("parseIncomingText understands project commands, rename commands, and promp
     command: "project_add",
     name: "demo",
     path: "C:/work/demo"
+  });
+  assert.deepEqual(parseIncomingText("/project delete demo"), {
+    type: "command",
+    command: "project_delete",
+    name: "demo",
+    confirm: false
+  });
+  assert.deepEqual(parseIncomingText("/project delete demo confirm"), {
+    type: "command",
+    command: "project_delete",
+    name: "demo",
+    confirm: true
   });
   assert.deepEqual(parseIncomingText("/project default"), {
     type: "command",
@@ -73,7 +85,7 @@ test("formatStatus includes detailed run metadata when a run is active", () => {
       runningPid: 1234,
       runningProjectName: "demo",
       runningCwd: "E:/work/demo",
-      runningModel: "gpt-5.4",
+      runningModel: "gpt-5.2-codex",
       runningSandbox: "workspace-write",
       runningResumeMode: "resume",
       runningStartedAt: startedAt.toISOString(),
@@ -86,7 +98,7 @@ test("formatStatus includes detailed run metadata when a run is active", () => {
 
   assert.match(statusText, /Default project root: E:\/codex project/);
   assert.match(statusText, /Running: yes \(tracked from a previous bot instance, pid 1234\)/);
-  assert.match(statusText, /Model: gpt-5.4/);
+  assert.match(statusText, /Model: gpt-5.2-codex/);
   assert.match(statusText, /Sandbox: workspace-write/);
   assert.match(statusText, /Run mode: resumed existing session/);
   assert.match(statusText, /^Started: 2026-03-09 14:23:10$/m);
@@ -108,10 +120,11 @@ test("formatSessions prefers the tracked running session state", () => {
   assert.match(text, /- 2\. Older work \[error\]/);
 });
 
-test("help text documents the core commands and workflow", () => {
+test("help text documents confirmation and auto-create behavior", () => {
   const helpText = buildHelpText();
   assert.match(helpText, /\/help - show this help/);
-  assert.match(helpText, /\/project add <name> \[path\] - add a local folder as a project/);
-  assert.match(helpText, /\/project default <path> - set the default project root/);
-  assert.match(helpText, /1\. \/project default E:\\codex project/);
+  assert.match(helpText, /\/project use <name> - switch to a saved project, auto-creating a local directory/);
+  assert.match(helpText, /\/project default <path> - set the default project root and create that local directory if missing/);
+  assert.match(helpText, /\/project delete <name> - stage project deletion/);
+  assert.match(helpText, /2\. \/project delete demo confirm/);
 });

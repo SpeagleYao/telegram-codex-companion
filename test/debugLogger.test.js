@@ -1,10 +1,10 @@
-import fs from "node:fs";
+﻿import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { DebugLogger, summarizeText } from "../src/logging/debugLogger.js";
+import { DebugLogger, describeTextForDebug, summarizeText } from "../src/logging/debugLogger.js";
 
 function stripBom(value) {
   return value.replace(/^\ufeff/u, "");
@@ -13,6 +13,16 @@ function stripBom(value) {
 test("summarizeText shortens long messages but preserves both ends", () => {
   const value = summarizeText("a".repeat(150) + " middle " + "z".repeat(150), 20);
   assert.match(value, /^a{20} .* z{20}$/);
+});
+
+test("describeTextForDebug records metadata without returning raw text", () => {
+  const metadata = describeTextForDebug("secret line 1\nsecret line 2", "prompt");
+
+  assert.equal(metadata.promptLength, 27);
+  assert.equal(metadata.promptLineCount, 2);
+  assert.match(metadata.promptSha256, /^[a-f0-9]{64}$/);
+  assert.equal("promptPreview" in metadata, false);
+  assert.equal("text" in metadata, false);
 });
 
 test("DebugLogger writes JSON lines to disk with a UTF-8 BOM header", () => {

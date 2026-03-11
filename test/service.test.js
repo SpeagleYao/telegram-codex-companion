@@ -71,6 +71,16 @@ class FakeRunner {
   }
 }
 
+class FakeDebugLogger {
+  constructor() {
+    this.entries = [];
+  }
+
+  log(type, fields) {
+    this.entries.push({ type, fields });
+  }
+}
+
 function createConfig(overrides = {}) {
   return {
     allowedUserIds: new Set([111]),
@@ -653,7 +663,7 @@ test("project use auto-creates an unknown project inside the default root", asyn
   assert.match(telegramApi.messages.at(-1).text, /Created/);
 });
 
-test("project delete removes saved state but keeps the local folder", async (t) => {
+test("project delete requires confirmation before removing saved state", async (t) => {
   const { store, root } = createStore(t);
   const projectPath = path.join(root, "demo-project");
   fs.mkdirSync(projectPath, { recursive: true });
@@ -677,6 +687,11 @@ test("project delete removes saved state but keeps the local folder", async (t) 
   store.setActiveSession(111, session.id);
 
   await service.handleUpdate(createUpdate(111, 500, "/project delete demo"));
+  assert.ok(store.getProject("demo"));
+  assert.match(telegramApi.messages.at(-1).text, /staged for deletion only/);
+  assert.match(telegramApi.messages.at(-1).text, /\/project delete demo confirm/);
+
+  await service.handleUpdate(createUpdate(111, 500, "/project delete demo confirm"));
 
   assert.equal(store.getProject("demo"), null);
   assert.equal(store.listSessionsForProject("demo").length, 0);
@@ -753,4 +768,215 @@ test("projects command paginates reply keyboard buttons", async (t) => {
   assert.equal(secondKeyboard.filter((text) => text.startsWith("/project use ")).length, 2);
   assert.ok(secondKeyboard.includes("/projects 1"));
 });
+
+
+test("unauthorized messages are logged without raw text previews", async (t) => {
+  const { store } = createStore(t);
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const debugLogger = new FakeDebugLogger();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi,
+    debugLogger
+  });
+
+  await service.handleUpdate(createUpdate(222, 500, "secret unauthorized prompt"));
+
+  const received = debugLogger.entries.find((entry) => entry.type === "telegram.message.received");
+  assert.ok(received);
+  assert.equal(received.fields.textLength, 26);
+  assert.equal(received.fields.isAuthorized, false);
+  assert.equal("textPreview" in received.fields, false);
+  assert.equal("messageText" in received.fields, false);
+});
+
+test("prompt and send debug logs keep only metadata instead of raw bodies", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const debugLogger = new FakeDebugLogger();
+  runner.enqueue({
+    threadId: "thread-secure",
+    output: "sensitive output body"
+  });
+
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi,
+    debugLogger
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  await service.handleUpdate(createUpdate(111, 500, "sensitive prompt body"));
+  await flush();
+
+  const dispatch = debugLogger.entries.find((entry) => entry.type === "telegram.prompt.dispatch");
+  const completed = debugLogger.entries.find((entry) => entry.type === "telegram.prompt.completed");
+  const sent = debugLogger.entries.find((entry) => entry.type === "telegram.message.send" && entry.fields.totalLength === "sensitive output body".length);
+
+  assert.ok(dispatch);
+  assert.equal(dispatch.fields.promptLength, 21);
+  assert.match(dispatch.fields.promptSha256, /^[a-f0-9]{64}$/);
+  assert.equal("promptPreview" in dispatch.fields, false);
+
+  assert.ok(completed);
+  assert.equal(completed.fields.outputLength, 21);
+  assert.match(completed.fields.outputSha256, /^[a-f0-9]{64}$/);
+  assert.equal("outputPreview" in completed.fields, false);
+
+  assert.ok(sent);
+  assert.equal(sent.fields.textLength, 21);
+  assert.match(sent.fields.textSha256, /^[a-f0-9]{64}$/);
+  assert.equal("textPreview" in sent.fields, false);
+});
+
+test("deferred long prompt flush retries after a pre-commit failure", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const sentMessages = [];
+  let progressFailuresRemaining = 1;
+  const telegramApi = {
+    async sendMessage(chatId, text, options = {}) {
+      if (text.startsWith("Starting a new session in demo...") && progressFailuresRemaining > 0) {
+        progressFailuresRemaining -= 1;
+        throw new Error("temporary progress failure");
+      }
+      const message = { chatId, text, options, message_id: sentMessages.length + 1 };
+      sentMessages.push(message);
+      return { ok: true, message_id: message.message_id };
+    },
+    async editMessageText(chatId, messageId, text, options = {}) {
+      return { ok: true, chatId, messageId, text, options };
+    }
+  };
+
+  const runner = new FakeRunner();
+  runner.enqueue({ threadId: "thread-batch-retry", output: "Retried answer", pid: 1234 });
+  const debugLogger = new FakeDebugLogger();
+  const service = new TelegramCompanionService({
+    config: createConfig({ pollRetryDelayMs: 10 }),
+    store,
+    runner,
+    telegramApi,
+    debugLogger
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  await service.handleUpdate(createUpdate(111, 500, "a".repeat(3600)));
+  await new Promise((resolve) => setTimeout(resolve, 1800));
+  await flush();
+
+  assert.equal(runner.calls.length, 1);
+  assert.ok(sentMessages.some((message) => message.text.includes("Retried answer")));
+  assert.ok(debugLogger.entries.some((entry) => entry.type === "telegram.prompt.batch_retry_scheduled"));
+});
+
+test("deferred long prompt flush keeps an isolated commit context while another update is in flight", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  runner.enqueue({ threadId: "thread-isolated-context", output: "Deferred answer", pid: 4567 });
+
+  const service = new TelegramCompanionService({
+    config: createConfig({ allowedUserIds: new Set([111, 222]) }),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  await service.handleUpdate(createUpdate(111, 500, "a".repeat(3600)));
+
+  const entered = createDeferred();
+  const release = createDeferred();
+  const originalHandleCommand = service.handleCommand.bind(service);
+  service.handleCommand = async ({ userId, chatId, parsed }) => {
+    if (userId === 222 && parsed.command === "help") {
+      entered.resolve();
+      await release.promise;
+      throw new Error("other update failed before commit");
+    }
+
+    return originalHandleCommand({ userId, chatId, parsed });
+  };
+
+  const unrelatedUpdatePromise = service.handleUpdate(createUpdate(222, 600, "/help"));
+  await entered.promise;
+  await service.flushPendingPrompt(111, { deferred: true });
+  release.resolve();
+
+  await assert.rejects(
+    unrelatedUpdatePromise,
+    (error) => {
+      assert.equal(error.message, "other update failed before commit");
+      assert.equal(error.handledUpdate, undefined);
+      assert.equal(error.commitReason, undefined);
+      return true;
+    }
+  );
+  await flush();
+
+  assert.equal(runner.calls.length, 1);
+  assert.ok(telegramApi.messages.some((message) => message.text.includes("Deferred answer")));
+});
+
+test("prompt persistence failure stops the launched run before the update is committed", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  let stopped = false;
+  runner.enqueue({
+    threadId: "thread-persist-fail",
+    output: "unused",
+    pid: 7777,
+    onStop() {
+      stopped = true;
+    },
+    promise: new Promise(() => {})
+  });
+  const debugLogger = new FakeDebugLogger();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi,
+    debugLogger
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+
+  const originalSetRunState = store.setRunState.bind(store);
+  store.setRunState = () => {
+    throw new Error("state write failed");
+  };
+
+  await assert.rejects(
+    () => service.handleUpdate(createUpdate(111, 500, "trigger persist failure")),
+    /state write failed/
+  );
+  await flush();
+  store.setRunState = originalSetRunState;
+
+  assert.equal(stopped, true);
+  assert.equal(service.activeRuns.size, 0);
+  assert.equal(store.getUserBinding(111).runningPid, null);
+  assert.ok(debugLogger.entries.some((entry) => entry.type === "telegram.prompt.state_persist_failed"));
+});
+
 

@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
+﻿import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
-import { summarizeText } from "../logging/debugLogger.js";
+import { describeTextForDebug, summarizeText } from "../logging/debugLogger.js";
 
 function extractMessageText(item) {
   if (!item || typeof item !== "object") {
@@ -34,28 +34,84 @@ function extractMessageText(item) {
   return "";
 }
 
-function quoteForShell(value) {
-  if (value === "") {
-    return '""';
+function stripWrappingQuotes(value) {
+  const normalized = String(value || "").trim();
+  if (
+    normalized.length >= 2 &&
+    ((normalized.startsWith("\"") && normalized.endsWith("\"")) ||
+      (normalized.startsWith("'") && normalized.endsWith("'")))
+  ) {
+    return normalized.slice(1, -1);
   }
-
-  if (!/[\s"]/u.test(value)) {
-    return value;
-  }
-
-  return `"${value.replace(/([\\"])/gu, "\\$1")}"`;
+  return normalized;
 }
 
-function normalizeExecutable(executable) {
+function normalizeExecutable(executable, platform = process.platform) {
+  const normalizedExecutable = stripWrappingQuotes(executable);
   if (
-    process.platform === "win32" &&
-    /\\WindowsApps\\/iu.test(executable) &&
-    path.basename(executable).toLowerCase() === "codex.exe"
+    platform === "win32" &&
+    /\\WindowsApps\\/iu.test(normalizedExecutable) &&
+    path.basename(normalizedExecutable).toLowerCase() === "codex.exe"
   ) {
     return "codex";
   }
 
-  return executable;
+  return normalizedExecutable;
+}
+
+function ensureTrailingSeparator(value) {
+  return /[\\/]$/u.test(value) ? value : value + path.sep;
+}
+
+function resolveWindowsCmdShimScript(rawScriptPath, shimDirectory) {
+  const normalizedPath = rawScriptPath.replace(/%~dp0/giu, ensureTrailingSeparator(shimDirectory));
+  if (path.isAbsolute(normalizedPath)) {
+    return path.normalize(normalizedPath);
+  }
+  return path.resolve(shimDirectory, normalizedPath);
+}
+
+function extractWindowsCmdShimScriptPaths(cmdText) {
+  const matches = [...String(cmdText || "").matchAll(/"([^"\r\n]+?\.js)"/giu)].map((match) => match[1]);
+  matches.sort((left, right) => {
+    const leftScore = /@openai[\\/]codex[\\/]bin[\\/]codex\.js$/iu.test(left) ? 2 : /codex\.js$/iu.test(left) ? 1 : 0;
+    const rightScore = /@openai[\\/]codex[\\/]bin[\\/]codex\.js$/iu.test(right) ? 2 : /codex\.js$/iu.test(right) ? 1 : 0;
+    return rightScore - leftScore;
+  });
+  return matches;
+}
+
+function resolveWindowsCmdShimNodeEntry(
+  executable,
+  {
+    platform = process.platform,
+    nodeExecutable = process.execPath,
+    exists = fs.existsSync,
+    readFile = (filePath) => fs.readFileSync(filePath, "utf8")
+  } = {}
+) {
+  if (platform !== "win32") {
+    return null;
+  }
+
+  const normalizedExecutable = stripWrappingQuotes(executable);
+  if (!normalizedExecutable.toLowerCase().endsWith(".cmd") || !exists(normalizedExecutable)) {
+    return null;
+  }
+
+  const shimDirectory = path.dirname(normalizedExecutable);
+  const cmdText = readFile(normalizedExecutable);
+  for (const scriptPath of extractWindowsCmdShimScriptPaths(cmdText)) {
+    const resolvedScriptPath = resolveWindowsCmdShimScript(scriptPath, shimDirectory);
+    if (exists(resolvedScriptPath)) {
+      return {
+        command: nodeExecutable,
+        argsPrefix: [resolvedScriptPath]
+      };
+    }
+  }
+
+  return null;
 }
 
 export function resolveWindowsCodexNodeEntry(
@@ -64,22 +120,23 @@ export function resolveWindowsCodexNodeEntry(
     platform = process.platform,
     appData = process.env.APPDATA,
     nodeExecutable = process.execPath,
-    exists = fs.existsSync
+    exists = fs.existsSync,
+    readFile = (filePath) => fs.readFileSync(filePath, "utf8")
   } = {}
 ) {
   if (platform !== "win32") {
     return null;
   }
 
+  const normalizedExecutable = stripWrappingQuotes(executable);
   const candidates = [];
-  const executableText = String(executable || "");
-  const lowerExecutable = executableText.toLowerCase();
+  const lowerExecutable = normalizedExecutable.toLowerCase();
 
   if (lowerExecutable.endsWith(".cmd")) {
-    candidates.push(path.join(path.dirname(executableText), "node_modules", "@openai", "codex", "bin", "codex.js"));
+    candidates.push(path.join(path.dirname(normalizedExecutable), "node_modules", "@openai", "codex", "bin", "codex.js"));
   }
 
-  if (lowerExecutable === "codex" || /\\windowsapps\\/iu.test(executableText)) {
+  if (lowerExecutable === "codex" || /\\windowsapps\\/iu.test(normalizedExecutable)) {
     if (appData) {
       candidates.push(path.join(appData, "npm", "node_modules", "@openai", "codex", "bin", "codex.js"));
     }
@@ -94,7 +151,12 @@ export function resolveWindowsCodexNodeEntry(
     }
   }
 
-  return null;
+  return resolveWindowsCmdShimNodeEntry(normalizedExecutable, {
+    platform,
+    nodeExecutable,
+    exists,
+    readFile
+  });
 }
 
 export class CodexRunner {
@@ -102,6 +164,10 @@ export class CodexRunner {
     this.config = config;
     this.spawnImpl = options.spawnImpl ?? spawn;
     this.debugLogger = options.debugLogger ?? null;
+    this.platform = options.platform ?? process.platform;
+    this.env = options.env ?? process.env;
+    this.resolveWindowsCodexNodeEntryImpl =
+      options.resolveWindowsCodexNodeEntry ?? resolveWindowsCodexNodeEntry;
   }
 
   buildArgs(prompt, resumeSessionId = null) {
@@ -133,14 +199,17 @@ export class CodexRunner {
   }
 
   spawnChild(cwd, args) {
-    const executable = normalizeExecutable(this.config.codexExecutable);
-    const nodeEntry = resolveWindowsCodexNodeEntry(executable);
+    const executable = normalizeExecutable(this.config.codexExecutable, this.platform);
+    const nodeEntry = this.resolveWindowsCodexNodeEntryImpl(executable, {
+      platform: this.platform,
+      appData: this.env.APPDATA
+    });
 
     if (nodeEntry) {
       return {
         child: this.spawnImpl(nodeEntry.command, [...nodeEntry.argsPrefix, ...args], {
           cwd,
-          env: process.env,
+          env: this.env,
           windowsHide: true
         }),
         launchMode: "node_entry",
@@ -149,28 +218,21 @@ export class CodexRunner {
       };
     }
 
-    if (process.platform === "win32") {
-      const command = [executable, ...args].map(quoteForShell).join(" ");
-      return {
-        child: this.spawnImpl(command, {
-          cwd,
-          env: process.env,
-          windowsHide: true,
-          shell: true
-        }),
-        launchMode: "shell_command",
-        command,
-        args: []
-      };
+    if (this.platform === "win32" && executable.toLowerCase().endsWith(".cmd")) {
+      const error = new Error(
+        `CODEX_EXECUTABLE points to a Windows .cmd shim that could not be resolved safely: ${executable}`
+      );
+      error.code = "CODEX_WINDOWS_CMD_UNRESOLVED";
+      throw error;
     }
 
     return {
       child: this.spawnImpl(executable, args, {
         cwd,
-        env: process.env,
+        env: this.env,
         windowsHide: true
       }),
-      launchMode: "direct",
+      launchMode: this.platform === "win32" ? "direct_windows" : "direct",
       command: executable,
       args
     };
@@ -185,12 +247,11 @@ export class CodexRunner {
       cwd,
       resumeSessionId,
       pid: child.pid ?? null,
-      promptLength: prompt.length,
-      promptPreview: summarizeText(prompt),
+      ...describeTextForDebug(prompt, "prompt"),
       launchMode: spawnResult.launchMode,
       command: spawnResult.command,
-      args: spawnResult.args,
-      argsLength: args.join(" ").length
+      spawnedArgCount: spawnResult.args.length,
+      codexArgCount: args.length
     });
 
     let threadId = resumeSessionId;
@@ -272,8 +333,7 @@ export class CodexRunner {
             pid: child.pid ?? null,
             threadId,
             exitCode: code,
-            outputLength: output.length,
-            outputPreview: summarizeText(output),
+            ...describeTextForDebug(output, "output"),
             stderrLength: stderrText.trim().length,
             stderrPreview: stderrSummary || null
           });

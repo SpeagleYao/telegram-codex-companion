@@ -1,4 +1,4 @@
-import fs from "node:fs";
+﻿import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -35,7 +35,7 @@ test("loadConfig reads .env values and resolves default paths", (t) => {
       "ALLOWED_USER_IDS=111, 222",
       "CODEX_FULL_AUTO=false",
       "CODEX_SANDBOX=workspace-write",
-      "CODEX_MODEL=gpt-5.4",
+      "CODEX_MODEL=gpt-5.2-codex",
       "CODEX_REASONING_EFFORT=high",
       "DEFAULT_PROJECT_ROOT=./workspace-root",
       "DEBUG_LOG_ENABLED=true",
@@ -52,7 +52,7 @@ test("loadConfig reads .env values and resolves default paths", (t) => {
   assert.deepEqual([...config.allowedUserIds], [111, 222]);
   assert.equal(config.codexFullAuto, false);
   assert.equal(config.codexSandbox, "workspace-write");
-  assert.equal(config.codexModel, "gpt-5.4");
+  assert.equal(config.codexModel, "gpt-5.2-codex");
   assert.equal(config.codexReasoningEffort, "high");
   assert.equal(config.defaultProjectRoot, path.join(root, "workspace-root"));
   assert.equal(config.debugLogEnabled, true);
@@ -61,6 +61,20 @@ test("loadConfig reads .env values and resolves default paths", (t) => {
   assert.equal(config.pollRetryDelayMs, 4567);
   assert.equal(config.projectsStoragePath, path.join(root, "data", "projects.sqlite"));
   assert.equal(config.stateStoragePath, path.join(root, "data", "state.sqlite"));
+  assert.equal(config.debugLogPath, path.join(root, "logs", "bot-debug.jsonl"));
+});
+
+test("loadConfig defaults debug logging to disabled", (t) => {
+  const root = withTempCwd(t);
+  fs.writeFileSync(
+    path.join(root, ".env"),
+    "TELEGRAM_BOT_TOKEN=test-token\nALLOWED_USER_IDS=111\n",
+    "utf8"
+  );
+
+  const config = loadConfig();
+
+  assert.equal(config.debugLogEnabled, false);
   assert.equal(config.debugLogPath, path.join(root, "logs", "bot-debug.jsonl"));
 });
 
@@ -84,7 +98,6 @@ test("loadConfig lets process.env override .env values", (t) => {
   assert.equal(config.debugLogEnabled, true);
   assert.equal(config.defaultProjectRoot, path.join(root, "from-env"));
 });
-
 
 test("loadConfig rejects invalid booleans", (t) => {
   const root = withTempCwd(t);

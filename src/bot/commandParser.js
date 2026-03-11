@@ -1,4 +1,4 @@
-function stripBotSuffix(commandName) {
+﻿function stripBotSuffix(commandName) {
   return commandName.split("@")[0];
 }
 
@@ -28,12 +28,13 @@ export function parseIncomingText(text) {
       };
     }
 
-    const deleteMatch = /^(?:delete|remove)\s+([^\s]+)$/u.exec(rest);
+    const deleteMatch = /^(?:delete|remove)\s+([^\s]+)(?:\s+(confirm|--confirm))?$/u.exec(rest);
     if (deleteMatch) {
       return {
         type: "command",
         command: "project_delete",
-        name: deleteMatch[1]
+        name: deleteMatch[1],
+        confirm: Boolean(deleteMatch[2])
       };
     }
 

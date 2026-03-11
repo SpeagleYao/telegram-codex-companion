@@ -1,4 +1,4 @@
-# Telegram Codex Companion
+﻿# Telegram Codex Companion
 
 Use Codex CLI from your phone through a private Telegram bot.
 
@@ -123,6 +123,7 @@ Edit `.env` and fill in:
 - `TELEGRAM_BOT_TOKEN`
 - `ALLOWED_USER_IDS`
 - `CODEX_EXECUTABLE` only if `codex` is not available on `PATH`
+- leave `DEBUG_LOG_ENABLED=false` unless you are temporarily troubleshooting locally
 
 Minimal example:
 
@@ -130,6 +131,7 @@ Minimal example:
 TELEGRAM_BOT_TOKEN=123456:replace-me
 ALLOWED_USER_IDS=123456789
 CODEX_EXECUTABLE=codex
+DEBUG_LOG_ENABLED=false
 ```
 
 ### 6. Start the bot
@@ -231,10 +233,12 @@ The bot reads configuration from `.env` in the project root.
 | `STATE_STORAGE_PATH` | No | SQLite path for sessions, bindings, and polling offset. Default: `./data/state.sqlite`. |
 | `CODEX_EXECUTABLE` | No | Codex CLI command or absolute path. |
 | `CODEX_FULL_AUTO` | No | When `true`, runs Codex with `--full-auto`. Default: `true`. |
-| `CODEX_SANDBOX` | No | Passed as `--sandbox <value>`. Default: `workspace-write`. |
-| `CODEX_MODEL` | No | Optional Codex model override. If left empty, Codex CLI uses its own default model. |
+| `CODEX_SANDBOX` | No | Passed as `--sandbox <value>`. Leave blank to use Codex CLI defaults. Example: `workspace-write`. |
+| `CODEX_MODEL` | No | Optional exact model id passed as `--model <value>`. If left empty, Codex CLI uses its own default model. See the model guidance below before pinning one. |
 | `CODEX_REASONING_EFFORT` | No | Optional explicit reasoning override passed to Codex as `model_reasoning_effort`. Example: `low`, `medium`, `high`. If left empty, Codex CLI uses its own default reasoning setting. |
-| `DEFAULT_PROJECT_ROOT` | No | Default root folder used when `/project add <name>` omits the path or `/project use <name>` needs to auto-create a project. |
+| `DEFAULT_PROJECT_ROOT` | No | Default root folder used when `/project add <name>` omits the path or `/project use <name>` needs to auto-create a project directory. |
+| `DEBUG_LOG_ENABLED` | No | Enable local JSONL debug logging. Default: `false`. Only enable temporarily for local troubleshooting. |
+| `DEBUG_LOG_PATH` | No | JSONL file path used when `DEBUG_LOG_ENABLED=true`. Default: `./logs/bot-debug.jsonl`. |
 | `DEFAULT_REPLY_CHUNK_SIZE` | No | Max characters per Telegram message chunk. Default: `3500`. |
 | `POLL_TIMEOUT_SECONDS` | No | Telegram long-poll timeout. Default: `20`. |
 | `POLL_RETRY_DELAY_MS` | No | Delay after polling errors. Default: `3000`. |
@@ -255,15 +259,43 @@ ALLOWED_USER_IDS=123456789
 PROJECTS_STORAGE_PATH=./data/projects.sqlite
 STATE_STORAGE_PATH=./data/state.sqlite
 CODEX_EXECUTABLE=codex
+DEBUG_LOG_ENABLED=false
 CODEX_FULL_AUTO=true
 CODEX_SANDBOX=workspace-write
-CODEX_MODEL=
+CODEX_MODEL=gpt-5.2-codex
 CODEX_REASONING_EFFORT=high
 DEFAULT_PROJECT_ROOT=E:\codex project
+DEBUG_LOG_PATH=./logs/bot-debug.jsonl
 DEFAULT_REPLY_CHUNK_SIZE=3500
 POLL_TIMEOUT_SECONDS=20
 POLL_RETRY_DELAY_MS=3000
 ```
+
+### `CODEX_MODEL` guidance
+
+Use an official OpenAI model id or leave `CODEX_MODEL=` blank and let Codex CLI choose its default.
+
+Examples verified against official OpenAI model pages on March 11, 2026 ([docs](https://platform.openai.com/docs/models), [pricing/model page](https://openai.com/api/pricing/)):
+
+- `gpt-5.2-codex`
+- `gpt-5.1-codex-max`
+- `gpt-5.1-codex`
+
+Example `.env` lines:
+
+```env
+CODEX_MODEL=gpt-5.2-codex
+CODEX_MODEL=gpt-5.1-codex-max
+CODEX_MODEL=gpt-5.1-codex
+```
+
+If model availability changes, prefer the official OpenAI model pages over this README.
+
+### Debug logging
+
+`DEBUG_LOG_ENABLED` defaults to `false`.
+
+When enabled, local debug logs may still capture prompt-related or output-related diagnostics, filesystem paths, Telegram metadata, and session information. The current implementation avoids logging raw prompt/output previews by default, but the log file is still sensitive. Only enable it temporarily for local troubleshooting, then turn it back off.
 
 ### Windows Note About `CODEX_EXECUTABLE`
 
@@ -281,11 +313,11 @@ CODEX_EXECUTABLE=C:\Users\<YourUser>\AppData\Roaming\npm\codex.cmd
 - `/help` - show the full command reference and quick-start workflow
 - `/projects [page]` - list saved projects, mark the current one, and paginate the reply keyboard when the list grows
 - `/project add <name> [path]` - add a local project directory; if `path` is omitted, the bot uses `DEFAULT_PROJECT_ROOT` or your Telegram override
-- `/project use <name>` - switch the current project, auto-creating it inside the default root when needed
-- `/project delete <name>` - remove a saved project record and its saved sessions without deleting the local folder
+- `/project use <name>` - switch the current project, auto-creating a local directory inside the default root when needed
+- `/project delete <name>` - stage deletion; resend `/project delete <name> confirm` to remove the saved project record and its saved sessions without deleting the local folder
 - `/project current` - show the current project, path, and effective default root
 - `/project default` - show the effective default project root
-- `/project default <path>` - set the default project root from Telegram
+- `/project default <path>` - set the default project root from Telegram and create that local directory if it does not exist
 - `/new` - arm a brand-new session; the next normal message starts it
 - `/sessions` - list recent sessions for the current project
 - `/use <n>` - switch to a session shown by `/sessions`
@@ -300,7 +332,9 @@ Notes:
 - project names may only contain letters, numbers, dot, dash, and underscore
 - if `/project add <name>` omits the path, the bot uses the effective default project root and creates the folder when needed
 - `/project add` accepts paths with spaces as long as the project name itself has no spaces
-- `/project delete <name>` removes saved bot state only; it does not delete the local directory
+- `/project use <unknown>` auto-creates a local directory inside the effective default project root when one is available
+- `/project default <path>` also creates the local directory if it does not already exist
+- `/project delete <name>` requires a second confirmation command and removes saved bot state only; it does not delete the local directory
 - `/projects [page]` paginates the reply keyboard so large project lists stay manageable
 
 ## Typical First-Time Workflow
@@ -381,6 +415,8 @@ Note: this is stage-based progress, not token-by-token answer streaming.
 ### Run recovery
 
 If the bot process restarts while a Codex run is active, it will inspect the saved pid on startup.
+
+Telegram long polling also keeps the failed update pending: the bot only advances the stored offset after `service.handleUpdate()` succeeds. If an update handler throws, that update is retried instead of being silently skipped.
 
 - if the pid is still alive, the run remains marked as active
 - if the pid is gone, the session is marked as `interrupted` and the stale run state is cleared
@@ -529,4 +565,9 @@ Before publishing this repository:
 - multi-user mode
 - Telegram group/topic support
 - lightweight web viewer for diffs and long outputs
+
+
+
+
+
 

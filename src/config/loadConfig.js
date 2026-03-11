@@ -1,4 +1,4 @@
-import fs from "node:fs";
+﻿import fs from "node:fs";
 import path from "node:path";
 
 function parseEnvFile(filePath) {
@@ -130,7 +130,7 @@ export function loadConfig() {
     codexModel: resolveValue("CODEX_MODEL", fileValues) || "",
     codexReasoningEffort: resolveValue("CODEX_REASONING_EFFORT", fileValues) || "",
     defaultProjectRoot: resolveOptionalPathValue("DEFAULT_PROJECT_ROOT", fileValues),
-    debugLogEnabled: parseBooleanValue("DEBUG_LOG_ENABLED", fileValues, true),
+    debugLogEnabled: parseBooleanValue("DEBUG_LOG_ENABLED", fileValues, false),
     debugLogPath: resolvePathValue("DEBUG_LOG_PATH", fileValues, "./logs/bot-debug.jsonl"),
     defaultReplyChunkSize: parseIntValue("DEFAULT_REPLY_CHUNK_SIZE", fileValues, 3500),
     pollTimeoutSeconds: parseIntValue("POLL_TIMEOUT_SECONDS", fileValues, 20),

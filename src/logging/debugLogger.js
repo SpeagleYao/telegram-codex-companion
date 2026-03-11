@@ -1,3 +1,4 @@
+﻿import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -9,6 +10,18 @@ export function summarizeText(text, maxPreviewLength = 120) {
     return normalized;
   }
   return `${normalized.slice(0, maxPreviewLength)} ... ${normalized.slice(-maxPreviewLength)}`;
+}
+
+export function describeTextForDebug(text, prefix = "text") {
+  const value = String(text ?? "");
+  const lineCount = value.length === 0 ? 0 : value.split(/\r?\n/u).length;
+  const sha256 = crypto.createHash("sha256").update(value, "utf8").digest("hex");
+
+  return {
+    [`${prefix}Length`]: value.length,
+    [`${prefix}LineCount`]: lineCount,
+    [`${prefix}Sha256`]: sha256
+  };
 }
 
 function ensureUtf8Bom(filePath) {

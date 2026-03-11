@@ -1,4 +1,4 @@
-function formatDurationFromMs(durationMs) {
+﻿function formatDurationFromMs(durationMs) {
   if (!Number.isFinite(durationMs) || durationMs < 1000) {
     return "less than 1s";
   }
@@ -207,11 +207,11 @@ export function buildHelpText() {
     "Project commands",
     "/projects [page] - list saved projects",
     "/project add <name> [path] - add a local folder as a project",
-    "/project use <name> - switch to a saved project",
-    "/project delete <name> - remove a saved project record and its sessions",
+    "/project use <name> - switch to a saved project, auto-creating a local directory inside the default root if needed",
+    "/project delete <name> - stage project deletion; resend with confirm to remove saved sessions",
     "/project current - show the current project and path",
     "/project default - show the default project root",
-    "/project default <path> - set the default project root",
+    "/project default <path> - set the default project root and create that local directory if missing",
     "",
     "Session commands",
     "/new - start fresh on the next normal message",
@@ -230,7 +230,11 @@ export function buildHelpText() {
     "2. /project add demo",
     "3. /project use demo",
     "4. /new",
-    "5. Send a normal text message to start or continue a session."
+    "5. Send a normal text message to start or continue a session.",
+    "",
+    "Delete confirmation",
+    "1. /project delete demo",
+    "2. /project delete demo confirm"
   ].join("\n");
 }
 
