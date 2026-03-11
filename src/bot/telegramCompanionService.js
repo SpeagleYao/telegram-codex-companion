@@ -8,7 +8,8 @@ import {
   chunkText,
   formatProjects,
   formatSessions,
-  formatStatus
+  formatStatus,
+  PROJECTS_PAGE_SIZE
 } from "./messageFormatter.js";
 import { parseIncomingText } from "./commandParser.js";
 import { summarizeText } from "../logging/debugLogger.js";
@@ -205,6 +206,34 @@ export class TelegramCompanionService {
     return { created: true };
   }
 
+  parseProjectsPageArg(args) {
+    const normalized = (args || "").trim();
+    if (!normalized) {
+      return 1;
+    }
+
+    if (!/^\d+$/u.test(normalized)) {
+      return null;
+    }
+
+    const page = Number.parseInt(normalized, 10);
+    return page > 0 ? page : null;
+  }
+
+  paginateProjects(projects, requestedPage = 1) {
+    const totalProjects = projects.length;
+    const totalPages = Math.max(1, Math.ceil(totalProjects / PROJECTS_PAGE_SIZE));
+    const page = Math.min(Math.max(requestedPage, 1), totalPages);
+    const startIndex = (page - 1) * PROJECTS_PAGE_SIZE;
+
+    return {
+      page,
+      totalPages,
+      totalProjects,
+      projects: projects.slice(startIndex, startIndex + PROJECTS_PAGE_SIZE)
+    };
+  }
+
   async handleUpdate(update) {
     const message = update?.message;
     if (!message?.text || !message.from || !message.chat) {
@@ -352,13 +381,26 @@ export class TelegramCompanionService {
       }
       case "projects": {
         const binding = this.store.getUserBinding(userId);
+        const requestedPage = this.parseProjectsPageArg(parsed.args);
+        if (parsed.args && requestedPage === null) {
+          await this.safeSend(chatId, "Use /projects or /projects <page>.", {
+            reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
+          });
+          return;
+        }
+
         const projects = this.store.listProjects();
-        await this.safeSend(chatId, formatProjects(projects, binding?.currentProjectName ?? null), {
-          reply_markup:
-            projects.length > 0
-              ? buildProjectsKeyboard(projects)
-              : buildMainKeyboard(binding?.currentProjectName ?? null)
-        });
+        const pagination = this.paginateProjects(projects, requestedPage ?? 1);
+        await this.safeSend(
+          chatId,
+          formatProjects(pagination.projects, binding?.currentProjectName ?? null, pagination),
+          {
+            reply_markup:
+              projects.length > 0
+                ? buildProjectsKeyboard(pagination.projects, pagination)
+                : buildMainKeyboard(binding?.currentProjectName ?? null)
+          }
+        );
         return;
       }
       case "project_add": {
@@ -398,6 +440,45 @@ export class TelegramCompanionService {
         await this.safeSend(chatId, savedText, {
           reply_markup: buildMainKeyboard(project.name)
         });
+        return;
+      }
+      case "project_delete": {
+        if (!isValidProjectName(parsed.name)) {
+          await this.safeSend(chatId, "Project names can only use letters, numbers, dot, dash, and underscore.");
+          return;
+        }
+
+        const binding = this.refreshDetachedRunState(userId, this.store.getUserBinding(userId));
+        if (this.hasTrackedRun(userId, binding) && binding?.runningProjectName === parsed.name) {
+          await this.safeSend(chatId, `Stop the current run before deleting project ${parsed.name}.`, {
+            reply_markup: buildMainKeyboard(binding.currentProjectName ?? null)
+          });
+          return;
+        }
+
+        const deletedProject = this.store.deleteProject(parsed.name);
+        if (!deletedProject) {
+          await this.safeSend(chatId, `Unknown project: ${parsed.name}`, {
+            reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
+          });
+          return;
+        }
+
+        const nextBinding = this.store.getUserBinding(userId);
+        const clearedCurrentProject = binding?.currentProjectName === parsed.name;
+        const sessionText = deletedProject.deletedSessionCount === 1
+          ? "Removed 1 saved session for it."
+          : `Removed ${deletedProject.deletedSessionCount} saved sessions for it.`;
+        const clearText = clearedCurrentProject
+          ? " Current project cleared. Use /projects or /project use <name>."
+          : "";
+        await this.safeSend(
+          chatId,
+          `Deleted project ${deletedProject.name}. Local folder was not removed. ${sessionText}${clearText}`,
+          {
+            reply_markup: buildMainKeyboard(nextBinding?.currentProjectName ?? null)
+          }
+        );
         return;
       }
       case "project_use": {
@@ -497,7 +578,7 @@ export class TelegramCompanionService {
         const binding = this.store.getUserBinding(userId);
         await this.safeSend(
           chatId,
-          "Use /project add <name> [path], /project use <name>, /project current, or /project default <path>.",
+          "Use /project add <name> [path], /project use <name>, /project delete <name>, /project current, or /project default <path>.",
           {
             reply_markup: buildMainKeyboard(binding?.currentProjectName ?? null)
           }
@@ -986,3 +1067,4 @@ export class TelegramCompanionService {
     }
   }
 }
+

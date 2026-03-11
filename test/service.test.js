@@ -652,3 +652,105 @@ test("project use auto-creates an unknown project inside the default root", asyn
   assert.ok(fs.existsSync(project.cwd));
   assert.match(telegramApi.messages.at(-1).text, /Created/);
 });
+
+test("project delete removes saved state but keeps the local folder", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  const session = store.createSession({
+    codexSessionId: "thread-delete",
+    projectName: "demo",
+    title: "cleanup",
+    status: "idle"
+  });
+  store.setActiveSession(111, session.id);
+
+  await service.handleUpdate(createUpdate(111, 500, "/project delete demo"));
+
+  assert.equal(store.getProject("demo"), null);
+  assert.equal(store.listSessionsForProject("demo").length, 0);
+  assert.equal(store.getUserBinding(111).currentProjectName, null);
+  assert.ok(fs.existsSync(projectPath));
+  assert.match(telegramApi.messages.at(-1).text, /Local folder was not removed/);
+  assert.match(telegramApi.messages.at(-1).text, /Current project cleared/);
+});
+
+test("project delete refuses to remove a project with an active run", async (t) => {
+  const { store, root } = createStore(t);
+  const projectPath = path.join(root, "demo-project");
+  fs.mkdirSync(projectPath, { recursive: true });
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig(),
+    store,
+    runner,
+    telegramApi,
+    processUtils: {
+      isPidAlive() {
+        return true;
+      },
+      killPid() {}
+    }
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, `/project add demo ${projectPath}`));
+  store.setRunState(111, {
+    runningPid: 4242,
+    runningProjectName: "demo"
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, "/project delete demo"));
+
+  assert.ok(store.getProject("demo"));
+  assert.match(telegramApi.messages.at(-1).text, /Stop the current run before deleting project demo/);
+});
+
+test("projects command paginates reply keyboard buttons", async (t) => {
+  const { store, root } = createStore(t);
+
+  for (let index = 1; index <= 10; index += 1) {
+    const name = `demo-${String(index).padStart(2, "0")}`;
+    const projectPath = path.join(root, name);
+    fs.mkdirSync(projectPath, { recursive: true });
+    store.addProject({ name, cwd: projectPath });
+  }
+
+  const telegramApi = new FakeTelegramApi();
+  const runner = new FakeRunner();
+  const service = new TelegramCompanionService({
+    config: createConfig({ defaultReplyChunkSize: 10000 }),
+    store,
+    runner,
+    telegramApi
+  });
+
+  await service.handleUpdate(createUpdate(111, 500, "/projects"));
+
+  const firstPage = telegramApi.messages.at(-1);
+  const firstKeyboard = firstPage.options.reply_markup.keyboard.flat().map((button) => button.text);
+  assert.match(firstPage.text, /Projects \(page 1\/2, 10 total\):/);
+  assert.equal(firstKeyboard.filter((text) => text.startsWith("/project use ")).length, 8);
+  assert.ok(firstKeyboard.includes("/projects 2"));
+
+  await service.handleUpdate(createUpdate(111, 500, "/projects 2"));
+
+  const secondPage = telegramApi.messages.at(-1);
+  const secondKeyboard = secondPage.options.reply_markup.keyboard.flat().map((button) => button.text);
+  assert.match(secondPage.text, /Projects \(page 2\/2, 10 total\):/);
+  assert.equal(secondKeyboard.filter((text) => text.startsWith("/project use ")).length, 2);
+  assert.ok(secondKeyboard.includes("/projects 1"));
+});
+

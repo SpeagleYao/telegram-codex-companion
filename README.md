@@ -279,9 +279,10 @@ CODEX_EXECUTABLE=C:\Users\<YourUser>\AppData\Roaming\npm\codex.cmd
 
 - `/start` - show help
 - `/help` - show the full command reference and quick-start workflow
-- `/projects` - list saved projects and mark the current one
+- `/projects [page]` - list saved projects, mark the current one, and paginate the reply keyboard when the list grows
 - `/project add <name> [path]` - add a local project directory; if `path` is omitted, the bot uses `DEFAULT_PROJECT_ROOT` or your Telegram override
 - `/project use <name>` - switch the current project, auto-creating it inside the default root when needed
+- `/project delete <name>` - remove a saved project record and its saved sessions without deleting the local folder
 - `/project current` - show the current project, path, and effective default root
 - `/project default` - show the effective default project root
 - `/project default <path>` - set the default project root from Telegram
@@ -299,6 +300,8 @@ Notes:
 - project names may only contain letters, numbers, dot, dash, and underscore
 - if `/project add <name>` omits the path, the bot uses the effective default project root and creates the folder when needed
 - `/project add` accepts paths with spaces as long as the project name itself has no spaces
+- `/project delete <name>` removes saved bot state only; it does not delete the local directory
+- `/projects [page]` paginates the reply keyboard so large project lists stay manageable
 
 ## Typical First-Time Workflow
 
@@ -356,7 +359,7 @@ The bot uses Telegram reply keyboards for common actions such as:
 - `/status`
 - `/stop`
 - `/project default`
-- quick project switching
+- quick project switching with pagination when the project list is long
 - quick session switching
 
 This keeps the phone workflow much lighter than typing full commands each time.

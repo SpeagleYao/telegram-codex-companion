@@ -199,6 +199,73 @@ export class CompanionStateStore {
     return this.getProject(name);
   }
 
+  deleteProject(name) {
+    const project = this.getProject(name);
+    if (!project) {
+      return null;
+    }
+
+    const timestamp = nowIso();
+    const sessionIds = this.stateDb
+      .prepare(`
+        SELECT id
+        FROM sessions
+        WHERE project_name = ?
+      `)
+      .all(name)
+      .map((row) => row.id);
+
+    this.projectsDb
+      .prepare(`
+        DELETE FROM projects
+        WHERE name = ?
+      `)
+      .run(name);
+
+    this.stateDb
+      .prepare(`
+        DELETE FROM sessions
+        WHERE project_name = ?
+      `)
+      .run(name);
+
+    this.stateDb
+      .prepare(`
+        UPDATE user_bindings
+        SET current_project_name = NULL, active_session_id = NULL, updated_at = ?
+        WHERE current_project_name = ?
+      `)
+      .run(timestamp, name);
+
+    if (sessionIds.length > 0) {
+      const placeholders = sessionIds.map(() => "?").join(", ");
+      this.stateDb
+        .prepare(`
+          UPDATE user_bindings
+          SET active_session_id = NULL, updated_at = ?
+          WHERE active_session_id IN (${placeholders})
+        `)
+        .run(timestamp, ...sessionIds);
+    }
+
+    const runningBindings = this.stateDb
+      .prepare(`
+        SELECT telegram_user_id AS telegramUserId
+        FROM user_bindings
+        WHERE running_project_name = ?
+      `)
+      .all(name);
+
+    for (const binding of runningBindings) {
+      this.clearRunState(binding.telegramUserId);
+    }
+
+    return {
+      ...project,
+      deletedSessionCount: sessionIds.length
+    };
+  }
+
   updateProjectUsage(name, activeSessionId = undefined) {
     const current = this.getProject(name);
     if (!current) {
@@ -509,3 +576,4 @@ export class CompanionStateStore {
       .run(String(offset), timestamp);
   }
 }
+

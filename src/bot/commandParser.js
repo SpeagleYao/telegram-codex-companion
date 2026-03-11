@@ -28,6 +28,15 @@ export function parseIncomingText(text) {
       };
     }
 
+    const deleteMatch = /^(?:delete|remove)\s+([^\s]+)$/u.exec(rest);
+    if (deleteMatch) {
+      return {
+        type: "command",
+        command: "project_delete",
+        name: deleteMatch[1]
+      };
+    }
+
     const defaultMatch = /^default(?:\s+(.+))?$/u.exec(rest);
     if (defaultMatch) {
       return {

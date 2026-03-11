@@ -64,6 +64,8 @@ function formatAbsoluteTime(isoText) {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
+export const PROJECTS_PAGE_SIZE = 8;
+
 export function chunkText(text, maxLength) {
   const normalized = (text || "").trim();
   if (!normalized) {
@@ -97,18 +99,27 @@ export function chunkText(text, maxLength) {
   return chunks.filter(Boolean);
 }
 
-export function formatProjects(projects, currentProjectName) {
-  if (projects.length === 0) {
+export function formatProjects(projects, currentProjectName, { page = 1, totalPages = 1, totalProjects = projects.length } = {}) {
+  if (totalProjects === 0) {
     return "No projects saved yet. Use /project add <name> [path].";
   }
 
-  return [
-    "Projects:",
+  const title = totalPages > 1
+    ? `Projects (page ${page}/${totalPages}, ${totalProjects} total):`
+    : "Projects:";
+  const lines = [
+    title,
     ...projects.map((project) => {
       const marker = project.name === currentProjectName ? "*" : "-";
       return `${marker} ${project.name} -> ${project.cwd}`;
     })
-  ].join("\n");
+  ];
+
+  if (totalPages > 1) {
+    lines.push(`Use /projects <page>. Current page: ${page}.`);
+  }
+
+  return lines.join("\n");
 }
 
 export function formatSessions(sessions, activeSessionId, runningSessionId = null) {
@@ -194,9 +205,10 @@ export function buildHelpText() {
     "Telegram Codex Companion",
     "",
     "Project commands",
-    "/projects - list saved projects",
+    "/projects [page] - list saved projects",
     "/project add <name> [path] - add a local folder as a project",
     "/project use <name> - switch to a saved project",
+    "/project delete <name> - remove a saved project record and its sessions",
     "/project current - show the current project and path",
     "/project default - show the default project root",
     "/project default <path> - set the default project root",
@@ -244,7 +256,7 @@ export function buildMainKeyboard(currentProjectName = null) {
   };
 }
 
-export function buildProjectsKeyboard(projects) {
+export function buildProjectsKeyboard(projects, { page = 1, totalPages = 1 } = {}) {
   const rows = [];
 
   for (let index = 0; index < projects.length; index += 2) {
@@ -253,6 +265,19 @@ export function buildProjectsKeyboard(projects) {
         projects.slice(index, index + 2).map((project) => `/project use ${project.name}`)
       )
     );
+  }
+
+  if (totalPages > 1) {
+    const navButtons = [];
+    if (page > 1) {
+      navButtons.push(`/projects ${page - 1}`);
+    }
+    if (page < totalPages) {
+      navButtons.push(`/projects ${page + 1}`);
+    }
+    if (navButtons.length > 0) {
+      rows.push(keyboardRow(navButtons));
+    }
   }
 
   rows.push(keyboardRow(["/new", "/status", "/sessions"]));
