@@ -2,7 +2,7 @@
 
 Use Codex CLI from your phone through a private Telegram bot.
 
-[English](./README.md) | [Simplified Chinese](./README.zh-CN.md)
+[English](./README.md) | [简中](./docs/translations/README.zh-CN.md) | [繁中](./docs/translations/README.zh-TW.md) | [日本語](./docs/translations/README.ja.md) | [한국어](./docs/translations/README.ko.md) | [Français](./docs/translations/README.fr.md) | [Español](./docs/translations/README.es.md)
 
 Quick links: [What It Does](#what-this-project-does) | [Install And Run](#install-and-run) | [Command Overview](#command-overview) | [Configuration](#configuration) | [Troubleshooting](#troubleshooting) | [Windows Startup](#windows-startup)
 
@@ -636,6 +636,7 @@ Before publishing this repository:
 - multi-user mode
 - Telegram group/topic support
 - lightweight web viewer for diffs and long outputs
+
 
 
 
