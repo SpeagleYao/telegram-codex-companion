@@ -1,22 +1,89 @@
-﻿# Telegram Codex Companion
+# Telegram Codex Companion
 
 Use Codex CLI from your phone through a private Telegram bot.
 
-`telegram-codex-companion` turns a Telegram private chat into a small-screen control surface for Codex running on your own Windows machine. It is meant for a single person who already uses Codex locally and wants a simpler alternative to remote desktop when away from the keyboard.
+[English](./README.md) | [Simplified Chinese](./README.zh-CN.md)
 
-## Can A Beginner Use This Quickly?
+Quick links: [What It Does](#what-this-project-does) | [Install And Run](#install-and-run) | [Command Overview](#command-overview) | [Configuration](#configuration) | [Troubleshooting](#troubleshooting) | [Windows Startup](#windows-startup)
 
-Yes. You can still start with an explicit path, but a default project root can now handle first-run project creation too.
+`telegram-codex-companion` turns a Telegram private chat into a lightweight control surface for Codex running on your own Windows machine. It is built for one person who already uses Codex locally and wants something much simpler than remote desktop when away from the keyboard.
 
-For a new user, the real blockers are usually not inside this repo. They are:
+## What This Project Does
 
-1. creating a Telegram bot with `@BotFather`
-2. finding your Telegram numeric user id
-3. making sure `codex` already works in a normal terminal
+- runs Codex CLI on your own Windows machine
+- lets you control it from a private Telegram chat on your phone
+- keeps separate projects and session history
+- sends progress updates and final answers back to Telegram
 
-If those three are ready, this project is quick to start. This README is organized around that first successful run.
+## Install And Run
 
-## Who This Is For
+### 1. Clone and configure
+
+```powershell
+git clone <your-repo-url>
+cd telegram-codex-companion
+Copy-Item .env.example .env
+```
+
+Fill in at least:
+
+- `TELEGRAM_BOT_TOKEN`
+- `ALLOWED_USER_IDS`
+- `CODEX_EXECUTABLE` only if `codex` is not on `PATH`
+
+### 2. Start the bot
+
+```powershell
+npm start
+```
+
+### 3. Open Telegram and try it
+
+```text
+/start
+/project default C:\codex-projects
+/project add demo
+/project use demo
+/new
+Please inspect this repo and tell me how to start it.
+```
+
+## Command Overview
+
+Use `/help` inside Telegram for the full command reference.
+
+The most common commands are:
+
+- `/project default <path>`
+- `/project add <name> [path]`
+- `/project use <name>`
+- `/new`
+- `/sessions`
+- `/use <n>`
+- `/status`
+- `/stop`
+
+## Why People Use It
+
+Instead of opening a full remote desktop session just to ask Codex one thing, you can:
+
+- send a prompt from Telegram
+- switch projects from your phone
+- resume an older Codex session
+- watch simple progress updates
+- get the final answer back in chat
+
+## Highlights
+
+- private Telegram chat -> local Codex CLI run
+- multiple named local projects with separate session history
+- fresh sessions, resume existing ones, and rename sessions for mobile use
+- staged progress updates while Codex is working
+- stale run recovery after a bot restart
+- access limited to approved Telegram user ids
+- intentionally no arbitrary shell passthrough
+
+## Best Fit
 
 This repo is a good fit if you want all of the following:
 
@@ -33,30 +100,34 @@ This repo is probably not the right starting point if you want:
 - arbitrary shell execution from chat
 - a cloud-hosted service
 
-## What It Does
+## Fast Reality Check
 
-- maps Telegram messages to local Codex CLI runs
-- stores multiple local projects as named working directories
-- keeps separate session history per project
-- lets you switch projects and sessions from Telegram
-- supports creating fresh sessions and resuming old ones
-- supports renaming sessions for easier mobile navigation
-- shows staged progress updates while Codex is working
-- detects interrupted or detached runs after a bot restart
-- keeps access restricted to approved Telegram user ids
+A first successful run is usually quick if these three things are already true:
 
-## Intended Use
+1. you can create a Telegram bot with `@BotFather`
+2. you know your Telegram numeric user id
+3. `codex` already works in a normal terminal on the same machine
 
-This project is intentionally narrow in scope:
+If those are ready, this repo is mostly wiring and workflow.
 
-- single user
-- private Telegram chats only
-- no arbitrary shell passthrough
-- no desktop streaming
-- no web UI
-- no Telegram group or topic routing yet
+## What It Feels Like
 
-The focus is reliability and clarity for personal use on mobile.
+In Telegram:
+
+```text
+/project default C:\codex-projects
+/project add blog
+/project use blog
+/new
+Please inspect this repo and tell me how to start it.
+```
+
+Then the bot:
+
+- launches or resumes Codex in the selected local folder
+- keeps that session attached to the current project
+- sends progress updates while Codex is working
+- returns the final answer to the same Telegram chat
 
 ## Quick Start
 
@@ -157,7 +228,7 @@ Open a private chat with your bot and send:
 Then add one local project:
 
 ```text
-/project default E:\codex project
+/project default C:\codex-projects
 /project add demo
 /project use demo
 /new
@@ -264,7 +335,7 @@ CODEX_FULL_AUTO=true
 CODEX_SANDBOX=workspace-write
 CODEX_MODEL=gpt-5.2-codex
 CODEX_REASONING_EFFORT=high
-DEFAULT_PROJECT_ROOT=E:\codex project
+DEFAULT_PROJECT_ROOT=C:\codex-projects
 DEBUG_LOG_PATH=./logs/bot-debug.jsonl
 DEFAULT_REPLY_CHUNK_SIZE=3500
 POLL_TIMEOUT_SECONDS=20
@@ -342,7 +413,7 @@ Notes:
 ### Add a project
 
 ```text
-/project default E:\codex project
+/project default C:\codex-projects
 /project add blog
 ```
 
